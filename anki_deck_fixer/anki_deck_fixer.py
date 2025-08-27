@@ -14,7 +14,6 @@ Prerequisites:
 Safety features:
 - Creates backup deck before processing
 - Processes cards in batches with review prompts
-- Logs all changes for review
 - Allows rollback if needed
 """
 
@@ -71,9 +70,56 @@ class AnkiConnector:
         """Get all card IDs in a deck"""
         return self.request("findCards", query=f"deck:\"{deck_name}\"")
     
+    def get_cards_in_deck_with_tag(self, deck_name: str, tag: str) -> List[int]:
+        """Get all card IDs in a deck"""
+        return self.request("findCards", query=f"deck:\"{deck_name}\" tag:{tag}")
+    
+    def get_cards_in_deck_without_tag(self, deck_name: str, tag: str) -> List[int]:
+        """Get all card IDs in a deck"""
+        return self.request("findCards", query=f"deck:\"{deck_name}\" -tag:{tag}")
+    
     def get_card_info(self, card_ids: List[int]) -> List[Dict]:
         """Get card information"""
         return self.request("cardsInfo", cards=card_ids)
+    
+    def get_note_tags(self, note_id: int) -> List[str]:
+        """Get note tags"""
+        params = {
+            "note": note_id
+        }
+        return self.request("getNoteTags", **params)
+    
+    def update_note_tags(self, note_id: int, tags: List[str]):
+        """Update note tags"""
+        params = {
+            "note": {
+                "id": note_id,
+                "tags": tags
+            }
+        }
+        return self.request("updateNoteTags", **params)
+    
+    def remove_note_tag(self, note_id: int, tag_to_remove: str):
+        """Remove specific tag from a note"""
+        current_tags = self.get_note_tags(note_id)
+        print("Current tags:", current_tags, "tag to remove: ", tag_to_remove)
+        updated_tags = [tag for tag in current_tags if tag != tag_to_remove]
+        print("Updated tags:", updated_tags)
+        self.update_note_tags(note_id, updated_tags)
+    
+    def update_note(self, note_id: int, fields: Dict[str, str], model_name: str, tags: List[str]):
+        """Update note fields"""
+        params = {
+            "note": {
+                "id": note_id,
+                "fields": fields,
+                "modelName": model_name,
+                "tags": tags
+            }
+        }
+        print("updateNote: ", params)
+        return self.request("updateNoteModel", **params)
+    
     
     def update_note_fields(self, note_id: int, fields: Dict[str, str], model_name: Optional[str] = None):
         """Update note fields"""
@@ -276,8 +322,9 @@ class WebServer(BaseHTTPRequestHandler):
         html_content = self.get_interface_html()
         
         self.send_response(200)
-        self.send_header('Content-type', 'text/html')
-        self.send_header('Content-Length', str(len(html_content)))
+        self.send_header('Content-type', 'text/html; charset=utf-8')
+        self.send_header('Content-Length', str(len(html_content.encode('utf-8'))))
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         self.end_headers()
         self.wfile.write(html_content.encode('utf-8'))
     
@@ -285,12 +332,14 @@ class WebServer(BaseHTTPRequestHandler):
         """Serve list of available decks"""
         try:
             if not self.fixer:
+                print("Error: Fixer not initialized")
                 raise Exception("Fixer not initialized")
             
             decks = self.fixer.anki.get_deck_names()
             response = {'decks': decks}
             self.send_json_response(response)
         except Exception as e:
+            print(f"Error getting decks: {e}")
             self.send_error(500, str(e))
             
 
@@ -306,10 +355,12 @@ class WebServer(BaseHTTPRequestHandler):
         # Test Anki connection
         try:
             if self.fixer:
-                self.fixer.anki.get_deck_names()
+                deck_names = self.fixer.anki.get_deck_names()
                 response['anki_connected'] = True
-        except:
-            pass
+            else:
+                print("No fixer instance available")
+        except Exception as e:
+            print(f"Anki connection failed: {e}")
         
         self.send_json_response(response)
     
@@ -319,6 +370,7 @@ class WebServer(BaseHTTPRequestHandler):
             deck_name = data.get('deck_name')
             batch_size = data.get('batch_size', 10)
             start_from = data.get('start_from', 0)
+            create_backup = data.get('create_backup', True)
             
             if not deck_name:
                 raise Exception("deck_name is required")
@@ -326,12 +378,21 @@ class WebServer(BaseHTTPRequestHandler):
             if not self.fixer:
                 raise Exception("Fixer not initialized")
             
-            print(f"Processing {batch_size} cards from deck '{deck_name}' starting at {start_from}")
+            # Update the fixer's backup setting for this request
+            original_backup_setting = self.fixer.should_create_backup
+            self.fixer.should_create_backup = create_backup
             
-            results = self.fixer.process_cards_for_review(deck_name, batch_size, start_from)
-            self.send_json_response(results)
+            try:
+                results = self.fixer.process_cards_for_review(deck_name, batch_size, start_from)
+                
+                self.send_json_response(results)
+            finally:
+                # Restore original backup setting
+                self.fixer.should_create_backup = original_backup_setting
             
         except Exception as e:
+            print(f"Error in handle_process_request: {e}")
+            traceback.print_exc()
             self.send_error(500, str(e))
     
     def handle_apply_request(self, data):
@@ -348,16 +409,32 @@ class WebServer(BaseHTTPRequestHandler):
     
     def send_json_response(self, data):
         """Send JSON response"""
-        response_data = json.dumps(data, ensure_ascii=False)
-        
-        self.send_response(200)
-        self.send_header('Content-type', 'application/json')
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-        self.send_header('Content-Length', str(len(response_data)))
-        self.end_headers()
-        self.wfile.write(response_data.encode('utf-8'))
+        try:
+            response_data = json.dumps(data, ensure_ascii=False, indent=2)
+            
+            self.send_response(200)
+            self.send_header('Content-type', 'application/json; charset=utf-8')
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+            self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+            response_bytes = response_data.encode('utf-8')
+            self.send_header('Content-Length', str(len(response_bytes)))
+            self.end_headers()
+            self.wfile.write(response_bytes)
+            
+        except Exception as e:
+            print(f"Error serializing JSON response: {e}")
+            print(f"Data type: {type(data)}")
+            print(f"Data preview: {str(data)[:500]}")
+            traceback.print_exc()
+            
+            # Send error response
+            error_response = json.dumps({"error": f"JSON serialization failed: {str(e)}"})
+            self.send_response(500)
+            self.send_header('Content-type', 'application/json; charset=utf-8')
+            self.send_header('Content-Length', str(len(error_response)))
+            self.end_headers()
+            self.wfile.write(error_response.encode('utf-8'))
     
     def do_OPTIONS(self):
         """Handle CORS preflight requests"""
@@ -412,26 +489,51 @@ class WebServer(BaseHTTPRequestHandler):
         .card { background: white; border: 1px solid #e9ecef; border-radius: 12px; margin-bottom: 20px; overflow: hidden; transition: all 0.3s ease; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
         .card:hover { box-shadow: 0 5px 20px rgba(0,0,0,0.1); }
         .card.selected { border-color: #667eea; box-shadow: 0 5px 20px rgba(102, 126, 234, 0.2); }
-        .card-header { background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); padding: 20px; border-bottom: 1px solid #e9ecef; display: flex; align-items: center; justify-content: space-between; }
+        .card-header { background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); padding: 8px; border-bottom: 1px solid #e9ecef; display: flex; align-items: center; justify-content: space-between; }
         .card-title { font-size: 1.2rem; font-weight: 600; color: #2c3e50; display: flex; align-items: center; gap: 15px; }
         .checkbox-wrapper { display: flex; align-items: center; gap: 10px; }
         .custom-checkbox { width: 20px; height: 20px; border: 2px solid #ddd; border-radius: 4px; cursor: pointer; transition: all 0.3s ease; display: flex; align-items: center; justify-content: center; }
         .custom-checkbox.checked { background: #667eea; border-color: #667eea; color: white; }
         .card-body { padding: 0; }
-        .field-group { border-bottom: 1px solid #f1f3f4; padding: 20px; }
+        .field-group { border-bottom: 1px solid #f1f3f4; padding: 5px; }
         .field-group:last-child { border-bottom: none; }
         .field-label { font-weight: 600; color: #495057; margin-bottom: 10px; display: block; }
         .field-comparison { display: grid; grid-template-columns: 1fr 1fr; gap: 20px; }
-        .field-section { background: #f8f9fa; border-radius: 8px; padding: 15px; }
+        .field-section { background: #f8f9fa; border-radius: 8px; padding: 5px; }
         .field-section h4 { color: #6c757d; font-size: 0.9rem; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 10px; }
-        .field-content { min-height: 60px; max-height: 200px; overflow-y: auto; font-family: 'Consolas', 'Monaco', monospace; font-size: 14px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
-        .field-input { width: 100%; min-height: 100px; padding: 15px; border: 1px solid #ddd; border-radius: 8px; font-family: inherit; font-size: 14px; resize: vertical; transition: border-color 0.3s ease; }
+        .field-content { overflow-y: auto; font-family: 'Consolas', 'Monaco', monospace; font-size: 14px; line-height: 1.5; word-break: break-word; }
+        .field-input { width: 100%; min-height: 220px; padding: 5px; border: 1px solid #ddd; border-radius: 8px; font-family: inherit; font-size: 14px; resize: vertical; transition: border-color 0.3s ease; }
         .field-input:focus { outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1); }
-        .changes-list { background: #e8f4f8; border-left: 4px solid #17a2b8; padding: 15px; margin-top: 15px; border-radius: 0 8px 8px 0; }
+        .changes-list { background: #e8f4f8; border-left: 4px solid #17a2b8; padding: 5px; padding-left: 25px; margin-top: 15px; border-radius: 0 8px 8px 0; }
         .uncertain-changes { background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin-top: 10px; border-radius: 0 8px 8px 0; }
         .stats { display: flex; gap: 20px; align-items: center; font-weight: 500; color: #495057; }
         .stat-item { display: flex; align-items: center; gap: 8px; }
         .empty-state { text-align: center; padding: 60px 20px; color: #6c757d; }
+        .diff-container { font-family: 'Consolas', 'Monaco', monospace; font-size: 14px; line-height: 1.5; }
+        .diff-split { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; border: 1px solid #ddd; border-radius: 4px; overflow: hidden; max-height: 300px; }
+        .diff-left, .diff-right { background: #f8f9fa; display: flex; flex-direction: column; min-height: 0; }
+        .diff-header { background: #e9ecef; padding: 5px; font-weight: 600; font-size: 12px; color: #495057; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #ddd; flex-shrink: 0; }
+        .diff-content { padding: 8px; font-family: 'Consolas', 'Monaco', monospace; font-size: 13px; line-height: 1.4; white-space: pre-wrap; word-wrap: break-word; overflow-y: auto; flex: 1; }
+        .diff-added { background-color: #d4edda; color: #155724; text-decoration: none; padding: 2px 4px; border-radius: 2px; }
+        .diff-removed { background-color: #f8d7da; color: #721c24; text-decoration: line-through; padding: 2px 4px; border-radius: 2px; }
+        .diff-unchanged { color: #6c757d; }
+        @media (max-width: 768px) { .diff-split { grid-template-columns: 1fr; } .diff-header { text-align: center; } }
+        .field-preview { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin-top: 10px; }
+        .field-preview h4 { color: #495057; font-size: 0.9rem; margin-bottom: 10px; }
+        .preview-content { font-family: Arial, sans-serif; font-size: 14px; line-height: 1.5; }
+        .field-tabs { border-bottom: 1px solid #ddd; display: flex; background: #f8f9fa; border-radius: 8px 8px 0 0; }
+        .field-tab { padding: 8px 16px; cursor: pointer; border: none; background: none; color: #6c757d; font-size: 0.85rem; font-weight: 500; transition: all 0.3s ease; flex: 1; text-align: center; }
+        .field-tab:first-child { border-radius: 8px 0 0 0; }
+        .field-tab:last-child { border-radius: 0 8px 0 0; }
+        .field-tab.active { background: white; color: #495057; border-bottom: 2px solid #667eea; }
+        .field-tab:hover:not(.active) { background: #e9ecef; }
+        .tab-content { display: none; padding: 5px; }
+        .tab-content.active { display: block; }
+        .field-section-tabbed { background: #f8f9fa; border-radius: 0 0 8px 8px; border: 1px solid #ddd; }
+        .reference-links { background: #f8f9fa; border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin-top: 10px; }
+        .reference-links h4 { color: #495057; font-size: 0.9rem; margin-bottom: 10px; }
+        .reference-links a { display: inline-block; margin-right: 15px; padding: 6px 12px; background: #e9ecef; color: #495057; text-decoration: none; border-radius: 6px; font-size: 0.85rem; transition: all 0.3s ease; }
+        .reference-links a:hover { background: #667eea; color: white; transform: translateY(-1px); }
         @media (max-width: 768px) { .field-comparison { grid-template-columns: 1fr; } }
     </style>
 </head>
@@ -439,9 +541,9 @@ class WebServer(BaseHTTPRequestHandler):
     <div class="container">
         <div class="header">
             <h1>Anki Card Fixer</h1>
-            <p>AI-powered Swedish flashcard improvement tool</p>
         </div>
 
+        <div class="controls" id="mainControls">
         <div class="controls" id="mainControls">
             <div class="control-group">
                 <div class="status-indicator" id="statusIndicator">Connecting...</div>
@@ -468,7 +570,7 @@ class WebServer(BaseHTTPRequestHandler):
                     </div>
                     <div class="form-group">
                         <label for="batchSize">Batch Size:</label>
-                        <input type="number" id="batchSize" class="form-control" value="10" min="1" max="100">
+                        <input type="number" id="batchSize" class="form-control" value="1" min="1" max="500">
                     </div>
                     <div class="form-group">
                         <label for="startFrom">Start From:</label>
@@ -481,14 +583,14 @@ class WebServer(BaseHTTPRequestHandler):
                 </div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
                     <div>
-                        <label><input type="checkbox" id="createBackup" checked> Create backup before processing</label>
+                        <label><input type="checkbox" id="createBackup"> Create backup</label>
                     </div>
                 </div>
             </div>
 
             <div class="processing" id="processing">
                 <div class="processing-spinner"></div>
-                <p id="processingText">Processing cards with Claude AI...</p>
+                <p id="processingText">Processing cards...</p>
             </div>
 
             <div id="cardContainer" style="display: none;">
@@ -499,6 +601,16 @@ class WebServer(BaseHTTPRequestHandler):
                 <div style="font-size: 4rem; margin-bottom: 20px; opacity: 0.5;">📝</div>
                 <h3>No cards to review</h3>
                 <p>Select a deck and click "Fix Cards" to get started</p>
+            </div>
+
+            <div class="debug-section" id="debugSection" style="display: none; margin-top: 30px;">
+                <div class="debug-header" onclick="toggleDebugOutput()" style="background: #f8f9fa; border: 1px solid #ddd; border-radius: 8px 8px 0 0; padding: 15px; cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
+                    <h3 style="margin: 0; color: #495057;">🔍 Claude Raw Output (Debug)</h3>
+                    <span id="debugToggle" style="color: #6c757d;">▼ Show</span>
+                </div>
+                <div class="debug-content" id="debugContent" style="display: none; border: 1px solid #ddd; border-top: none; border-radius: 0 0 8px 8px; padding: 20px; background: #f8f9fa;">
+                    <pre id="rawClaudeOutput" style="background: white; border: 1px solid #ddd; border-radius: 4px; padding: 15px; font-family: 'Consolas', 'Monaco', monospace; font-size: 12px; line-height: 1.4; white-space: pre-wrap; word-wrap: break-word; max-height: 400px; overflow-y: auto; margin: 0;"></pre>
+                </div>
             </div>
         </div>
     </div>
@@ -520,9 +632,11 @@ class WebServer(BaseHTTPRequestHandler):
                 
                 const indicator = document.getElementById('statusIndicator');
                 if (status.anki_connected && status.claude_api) {
+                    console.log("Server connected and ready");
                     indicator.textContent = 'Connected';
                     indicator.className = 'status-indicator status-connected';
                 } else {
+                    console.log("Server not fully connected");
                     indicator.textContent = 'Disconnected';
                     indicator.className = 'status-indicator status-disconnected';
                 }
@@ -548,6 +662,10 @@ class WebServer(BaseHTTPRequestHandler):
                     option.textContent = deck;
                     deckSelect.appendChild(option);
                 });
+                
+                if (data.decks.includes('Default')) {
+                    deckSelect.value = 'Default';
+                }
             } catch (error) {
                 console.error('Error loading decks:', error);
                 alert('Error loading decks. Make sure Anki is running with AnkiConnect.');
@@ -558,6 +676,7 @@ class WebServer(BaseHTTPRequestHandler):
             const deckName = document.getElementById('deckSelect').value;
             const batchSize = parseInt(document.getElementById('batchSize').value);
             const startFrom = parseInt(document.getElementById('startFrom').value);
+            const createBackup = document.getElementById('createBackup').checked;
             
             if (!deckName) {
                 alert('Please select a deck');
@@ -568,21 +687,37 @@ class WebServer(BaseHTTPRequestHandler):
             showProcessing();
 
             try {
+                const controller = new AbortController();
+                const timeoutId = setTimeout(() => controller.abort(), 240000); // 240 second timeout
+                
                 const response = await fetch('/api/process', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({
                         deck_name: deckName,
                         batch_size: batchSize,
-                        start_from: startFrom
-                    })
+                        start_from: startFrom,
+                        create_backup: createBackup
+                    }),
+                    signal: controller.signal
                 });
+                
+                clearTimeout(timeoutId);
 
                 if (!response.ok) {
                     throw new Error(`HTTP ${response.status}: ${await response.text()}`);
                 }
 
-                const data = await response.json();
+                const responseText = await response.text();
+                
+                let data;
+                try {
+                    data = JSON.parse(responseText);
+                } catch (parseError) {
+                    console.error("JSON parse error:", parseError);
+                    console.error("Failed to parse response:", responseText);
+                    throw new Error(`Invalid JSON response: ${parseError.message}`);
+                }
                 loadCardData(data);
                 hideProcessing();
                 showResults();
@@ -602,10 +737,6 @@ class WebServer(BaseHTTPRequestHandler):
 
             const selectedCardData = Array.from(selectedCards).map(index => cardData[index]);
             
-            if (!confirm(`Apply changes to ${selectedCards.size} card(s)?`)) {
-                return;
-            }
-
             showProcessing('Applying changes...');
 
             try {
@@ -625,16 +756,6 @@ class WebServer(BaseHTTPRequestHandler):
                 const result = await response.json();
                 hideProcessing();
                 
-                let message = `Successfully applied changes to ${result.applied_count} card(s)`;
-                if (result.failed_count > 0) {
-                    message += `\\n${result.failed_count} card(s) failed to update`;
-                    if (result.errors.length > 0) {
-                        message += ':\\n' + result.errors.join('\\n');
-                    }
-                }
-                
-                alert(message);
-                
                 selectedCards.clear();
                 updateStats();
                 
@@ -645,7 +766,7 @@ class WebServer(BaseHTTPRequestHandler):
             }
         }
 
-        function showProcessing(text = 'Processing cards with Claude AI...') {
+        function showProcessing(text = 'Processing cards...') {
             document.getElementById('processingText').textContent = text;
             document.getElementById('deckSelector').style.display = 'none';
             document.getElementById('processing').style.display = 'block';
@@ -666,9 +787,14 @@ class WebServer(BaseHTTPRequestHandler):
 
         function loadCardData(data) {
             cardData = data.processed_cards || [];
+            full_log = data.full_log || '';
             selectedCards.clear();
             renderCards();
             updateStats();
+            
+            // Show debug section and populate raw output
+            document.getElementById('debugSection').style.display = 'block';
+            document.getElementById('rawClaudeOutput').textContent = full_log;
         }
 
         function renderCards() {
@@ -714,6 +840,7 @@ class WebServer(BaseHTTPRequestHandler):
                 </div>
                 <div class="card-body">
                     ${renderFields(card, index)}
+                    ${renderReferences(card, index)}
                     ${renderChanges(card)}
                 </div>
             `;
@@ -723,7 +850,15 @@ class WebServer(BaseHTTPRequestHandler):
 
         function getCardTitle(card) {
             const fields = card.updated_fields || {};
-            const front = fields.Front || fields.front || '';
+            const originalFields = card.original_fields || {};
+            
+            // Try to get front field from updated fields first, then original
+            let front = fields.Front || fields.front || '';
+            if (!front) {
+                const originalFront = originalFields.Front || originalFields.front;
+                front = originalFront && typeof originalFront === 'object' ? originalFront.value : (originalFront || '');
+            }
+            
             if (front) {
                 const cleanFront = front.replace(/<[^>]*>/g, '').trim();
                 return cleanFront.length > 50 ? cleanFront.substring(0, 50) + '...' : cleanFront;
@@ -739,50 +874,102 @@ class WebServer(BaseHTTPRequestHandler):
             
             Object.keys(fields).forEach(fieldName => {
                 const newValue = fields[fieldName];
-                const oldValue = originalFields[fieldName] || '';
+                // Anki fields are objects with a 'value' property
+                const oldValueObj = originalFields[fieldName];
+                const oldValue = oldValueObj && typeof oldValueObj === 'object' ? oldValueObj.value : (oldValueObj || '');
                 
-                fieldsHtml += `
-                    <div class="field-group">
-                        <label class="field-label">${fieldName}</label>
-                        <div class="field-comparison">
-                            <div class="field-section">
-                                <h4>Original</h4>
-                                <div class="field-content">${escapeHtml(oldValue) || '<em>Empty</em>'}</div>
-                            </div>
-                            <div class="field-section">
-                                <h4>Updated</h4>
-                                <textarea class="field-input" 
-                                         onchange="updateField(${cardIndex}, '${fieldName}', this.value)"
-                                         placeholder="Enter ${fieldName} content...">${escapeHtml(newValue)}</textarea>
+                // Check if there are actual changes
+                const hasChanges = oldValue !== newValue;
+                
+                if (!hasChanges) {
+                    // No changes - just show the original value
+                    fieldsHtml += `
+                        <div class="field-group">
+                            <label class="field-label">${fieldName} <span style="color: #6c757d; font-weight: normal;">(no changes)</span></label>
+                            <div class="field-section" style="border: 1px solid #ddd; border-radius: 8px;">
+                                <div class="field-content" style="padding: 15px;">${escapeHtml(oldValue) || '<em>Empty</em>'}</div>
                             </div>
                         </div>
-                    </div>
-                `;
+                    `;
+                } else {
+                    // Has changes - show full tabbed interface
+                    const diffHtml = generateDiff(oldValue, newValue);
+                    
+                    // Generate HTML preview for Back field and reference links
+                    let previewHtml = '';
+                    if (fieldName === 'Back' && newValue) {
+                        // Replace newlines with <br> for HTML preview
+                        const previewValue = newValue.replace(/\\n/g, '<br>');
+                        
+                        previewHtml = `
+                            <div class="field-preview">
+                                <h4>Preview</h4>
+                                <div class="preview-content">${previewValue}</div>
+                            </div>
+                        `;
+                    }
+                    
+                    const tabId = `field-${cardIndex}-${fieldName.replace(/\\s+/g, '')}`;
+                    
+                    fieldsHtml += `
+                        <div class="field-group">
+                            <label class="field-label">${fieldName}</label>
+                            <div class="field-section-tabbed">
+                                <div class="field-tabs">
+                                    <button class="field-tab" onclick="switchTab('${tabId}', 'previous', this)">Previous</button>
+                                    <button class="field-tab active" onclick="switchTab('${tabId}', 'diff', this)">Diff</button>
+                                    <button class="field-tab" onclick="switchTab('${tabId}', 'updated', this)">Updated</button>
+                                </div>
+                                <div id="${tabId}-previous" class="tab-content">
+                                    <div class="field-content">${escapeHtml(oldValue) || '<em>Empty</em>'}</div>
+                                </div>
+                                <div id="${tabId}-diff" class="tab-content active">
+                                    <div class="field-content diff-container">${diffHtml}</div>
+                                </div>
+                                <div id="${tabId}-updated" class="tab-content">
+                                    <textarea class="field-input" 
+                                             onchange="updateField(${cardIndex}, '${fieldName}', this.value)"
+                                             oninput="updateFieldAndRefresh(${cardIndex}, '${fieldName}', this.value, '${tabId}')"
+                                             placeholder="Enter ${fieldName} content...">${escapeHtml(newValue)}</textarea>
+                                    ${previewHtml}
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                }
             });
             
             return fieldsHtml;
         }
-
+        
+        function renderReferences(card, cardIndex) {
+                // Extract Swedish word for reference links
+                const swedishWord = extractSwedishWord(card, cardIndex);
+                let referencesHtml = '';
+                if (swedishWord) {
+                    const wiktionaryUrl = `https://sv.wiktionary.org/wiki/${encodeURIComponent(swedishWord)}`;
+                    const reversoUrl = `https://context.reverso.net/översättning/svenska-engelska/${encodeURIComponent(swedishWord)}`;
+                    
+                    referencesHtml = `
+                        <div class="reference-links">
+                            <a href="${wiktionaryUrl}" target="_blank" rel="noopener">📚 Wiktionary</a>
+                            <a href="${reversoUrl}" target="_blank" rel="noopener">🔄 Reverso Context</a>
+                        </div>
+                    `;
+                }
+                
+                return referencesHtml;
+        }
+        
         function renderChanges(card) {
             let changesHtml = '';
-            
-            if (card.changes_made && card.changes_made.length > 0) {
-                changesHtml += `
-                    <div class="changes-list">
-                        <h4>Changes Made:</h4>
-                        <ul>
-                            ${card.changes_made.map(change => `<li>• ${escapeHtml(change)}</li>`).join('')}
-                        </ul>
-                    </div>
-                `;
-            }
             
             if (card.uncertain_changes && card.uncertain_changes.length > 0) {
                 changesHtml += `
                     <div class="uncertain-changes">
-                        <h4>Uncertain Changes (Review Carefully):</h4>
+                        <h4>Uncertain Changes:</h4>
                         <ul>
-                            ${card.uncertain_changes.map(change => `<li>⚠️ ${escapeHtml(change)}</li>`).join('')}
+                            ${card.uncertain_changes.map(change => `<li>${escapeHtml(change)}</li>`).join('')}
                         </ul>
                     </div>
                 `;
@@ -846,6 +1033,32 @@ class WebServer(BaseHTTPRequestHandler):
             }
         }
 
+        function updateFieldAndRefresh(cardIndex, fieldName, newValue, tabId) {
+            // Update the field data
+            updateField(cardIndex, fieldName, newValue);
+            
+            // Get original value for comparison
+            const card = cardData[cardIndex];
+            const originalFields = card.original_fields || {};
+            const oldValueObj = originalFields[fieldName];
+            const oldValue = oldValueObj && typeof oldValueObj === 'object' ? oldValueObj.value : (oldValueObj || '');
+            
+            // Update diff view
+            const diffContainer = document.getElementById(`${tabId}-diff`).querySelector('.field-content');
+            if (diffContainer) {
+                diffContainer.innerHTML = generateDiff(oldValue, newValue);
+            }
+            
+            // Update HTML preview if this is the Back field
+            if (fieldName === 'Back' && newValue) {
+                const previewContainer = document.querySelector(`#${tabId}-updated .preview-content`);
+                if (previewContainer) {
+                    const previewValue = newValue.replace(/\\n/g, '<br>');
+                    previewContainer.innerHTML = previewValue;
+                }
+            }
+        }
+
         function updateStats() {
             document.getElementById('totalCards').textContent = cardData.length;
             document.getElementById('selectedCards').textContent = selectedCards.size;
@@ -859,10 +1072,110 @@ class WebServer(BaseHTTPRequestHandler):
             applyBtn.disabled = selectedCards.size === 0;
         }
 
+        function extractSwedishWord(card, cardIndex) {
+            // Try to extract the main Swedish word from Front field
+            const frontField = card.updated_fields?.Front || 
+                              (card.original_fields?.Front && typeof card.original_fields.Front === 'object' ? 
+                               card.original_fields.Front.value : card.original_fields?.Front) || '';
+            console.log(`Extracting Swedish word from card ${cardIndex + 1}:`, frontField);
+            if (!frontField) return null;
+            
+            // Remove HTML tags
+            let cleanText = frontField.replace(/<[^>]*>/g, '');
+            
+            // Remove articles (en, ett, den, det) from the beginning
+            cleanText = cleanText.replace(/^(en|ett|den|det|att)\\s+/i, '');
+            
+            // Remove parentheses and their contents (like counts or grammar info)
+            cleanText = cleanText.replace(/\\([^)]*\\)/g, '');
+            
+            // Get the first word (main Swedish word)
+            const words = cleanText.trim().split(/\\s+/);
+            const mainWord = words[0];
+            
+            return mainWord ? mainWord.toLowerCase() : null;
+        }
+
+        function generateDiff(oldText, newText) {
+            if (!oldText && !newText) return '<div class="diff-split"><div class="diff-left"><em>No content</em></div><div class="diff-right"><em>No content</em></div></div>';
+            
+            // Split view with highlighting
+            const oldHighlighted = highlightDifferences(oldText, newText, 'removed');
+            const newHighlighted = highlightDifferences(newText, oldText, 'added');
+            
+            return `
+                <div class="diff-split">
+                    <div class="diff-left">
+                        <div class="diff-header">Previous</div>
+                        <div class="diff-content">${oldHighlighted || '<em>Empty</em>'}</div>
+                    </div>
+                    <div class="diff-right">
+                        <div class="diff-header">Updated</div>
+                        <div class="diff-content">${newHighlighted || '<em>Empty</em>'}</div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function highlightDifferences(text, compareText, className) {
+            if (!text) return '';
+            if (!compareText) return `<span class="diff-${className}">${escapeHtml(text)}</span>`;
+            if (text === compareText) return escapeHtml(text);
+            
+            // Simple word-based highlighting
+            const words = text.split(/(\\s+)/);
+            const compareWords = compareText.split(/(\\s+)/);
+            
+            return words.map(word => {
+                if (word.trim() === '') return word; // Keep whitespace as-is
+                
+                // Check if word exists in the other text
+                if (compareWords.includes(word)) {
+                    return escapeHtml(word);
+                } else {
+                    return `<span class="diff-${className}">${escapeHtml(word)}</span>`;
+                }
+            }).join('');
+        }
+
+        function switchTab(tabId, tabName, buttonElement) {
+            // Hide all tab contents for this field
+            const tabContents = document.querySelectorAll(`[id^="${tabId}-"]`);
+            tabContents.forEach(content => {
+                content.classList.remove('active');
+            });
+            
+            // Remove active class from all tab buttons for this field
+            const tabButtons = buttonElement.parentElement.querySelectorAll('.field-tab');
+            tabButtons.forEach(button => {
+                button.classList.remove('active');
+            });
+            
+            // Show the selected tab content
+            document.getElementById(`${tabId}-${tabName}`).classList.add('active');
+            
+            // Add active class to the clicked button
+            buttonElement.classList.add('active');
+        }
+
         function escapeHtml(text) {
+            if (!text) return '';
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        function toggleDebugOutput() {
+            const content = document.getElementById('debugContent');
+            const toggle = document.getElementById('debugToggle');
+            
+            if (content.style.display === 'none') {
+                content.style.display = 'block';
+                toggle.textContent = '▲ Hide';
+            } else {
+                content.style.display = 'none';
+                toggle.textContent = '▼ Show';
+            }
         }
     </script>
 </body>
@@ -923,9 +1236,8 @@ class SwedishCardProcessor:
         self.client = anthropic.Anthropic(api_key=api_key)
         self.forvo = ForvoAPI(forvo_api_key)
         self.anki = anki_connector
-        self.changes_log = []
         
-    def process_card_batch(self, cards: List[Dict]) -> List[Dict]:
+    def process_card_batch(self, cards: List[Dict]) -> tuple[List[Dict], str]:
         """Process a batch of cards using Claude"""
         
         # Prepare card data for Claude
@@ -944,26 +1256,35 @@ class SwedishCardProcessor:
         
         # Create prompt for Claude
         prompt = self._create_processing_prompt(card_data)
+        print(f"Prompt created, length: {len(prompt)} characters for {len(cards)} cards")
         
         try:
+            print("Calling Claude API...")
             response = self.client.messages.create(
                 model="claude-3-5-sonnet-20241022",
                 max_tokens=4000,
                 messages=[{"role": "user", "content": prompt}]
             )
+            print("Claude API call completed successfully")
+            
+            # Store raw response for debugging
+            raw_claude_response = response.content[0].text
             
             # Process cards and potentially add audio
-            processed_cards = self._parse_claude_response(response.content[0].text, cards)
+            print("Parsing Claude response...")
+            processed_cards = self._parse_claude_response(raw_claude_response, cards)
+            print(f"Parsed {len(processed_cards)} cards from Claude response")
             
             # Add Forvo audio where appropriate
             for card in processed_cards:
                 self._add_forvo_audio(card)
             
-            return processed_cards
+            return processed_cards, raw_claude_response
             
         except Exception as e:
             print(f"Error processing batch with Claude: {e}")
-            return []
+            traceback.print_exc()
+            return [], ""
     
     def _create_processing_prompt(self, card_data: List[Dict]) -> str:
         """Create the prompt for Claude to process cards"""
@@ -977,11 +1298,11 @@ You are a language expert tasked with helping me build a Swedish flash card deck
 2. An example sentence in quotations prefixed with "t.ex." should be simply be in parenthesis, without the prefix.
 3. A list of different defintions separated by "or, " should be converted into a numbered list with each item on a new line.
 4. When a word has several definitions indicate the total count in the front field, for example: "En skorpa (2)".
-5. Synonyms (in parenthesis coming after "syn: ") and additional information (such as "se även: " or related words) should use a darker grey text colour) and appear on a new line after the relevant definition.
+5. Synonyms (in parenthesis coming after "syn: ") and additional information (such as "se även: " or related words) should use #C2C2C2 as the text colour) and appear on a new line after the relevant definition.
 6. Less common usages should be indicated as such, coming last in the list of definitions after a "mindre vanliga: " line.
 7. Any sound tag beginning with "sound:hypertts" should be deleted. Then forvo should be checked to see if a relevant file exists there to replace it. No audio is better than this existing file.
 9. Fix the spelling for any misspelled words.
-10. Example sentences should be wrapped in quotations, and normally each be on their own line. The word in question should be in italics. The sentence (or partial sentence) should be as long as it needs to to show the word's usage but not longer.
+10. Example sentences should be wrapped in quotations, and normally each be on their own line. The word in question should be in italics (surrounded with <i></i> HTML tags). The sentence (or partial sentence) should be as long as it needs to to show the word's usage but not longer.
 11. If a word is reflexive, indicate that with "(refl)" at the start of the line, after the number.
 12. Very uncommon words that are unlikely to be seen or heard today can be marked with flag 7 ("sällsynt").
 13. Audio tags shouldn't be in the "front" field but rather in a separate field called "Audio". If the card type is "Basic" then it should be changed to "Basic (with audio)" so it has this additional field. 
@@ -989,26 +1310,23 @@ You are a language expert tasked with helping me build a Swedish flash card deck
 For each card you review go through each rule and apply a fix when relevant.
 
 ## General guidelines
-Always include the relevant preposition as this information is crucial to learn alongside the word, plus the word's article (en eller ett).
+Always include the relevant preposition as this information is crucial to learn alongside the word plus the word's article (en eller ett) if it is a noun.
 
-Write a brief but comprehensive log for all the changes you make as you go so I can later review it. At the end of the log write down any changes you were uncertain about that I'm more likely to want to know about.
-
-Try to keep the cards short and concise yet with enough info to capture the precise meaning of a word or phrase. A single word in English most often doesn't suffice to comprehensively define a Swedish word in all its usages, conjugations, etc. I want to be able to quickly review cards and only rely on the additional information when a card isn't sticking. The most essential information should come first and be most prominent.
+Keep the cards short and concise, yet with enough info to capture the precise meaning of a word or phrase. A single word in English most often doesn't suffice to comprehensively define a Swedish word in all its usages, conjugations, etc. I want to be able to quickly review cards and only rely on the additional information when a card isn't sticking. The most essential information should come first and be most prominent.
 """
         
         prompt = f"""{rules}
 
-Please process the following cards and return the results in JSON format. For each card, indicate what changes were made and provide the updated fields.
+Please process the following cards and return only the results strictly in JSON format, with no further comments.
 
 Cards to process:
 {json.dumps(card_data, indent=2, ensure_ascii=False)}
 
-Return format:
+Return format: (output nothing else)
 {{
   "processed_cards": [
     {{
       "note_id": 123,
-      "changes_made": ["description of change 1", "description of change 2"],
       "updated_fields": {{"Front": "new front", "Back": "new back", "audio": "new audio"}},
       "model_change": "basic (with audio)",  // only if model needs to change
       "uncertain_changes": ["things you're uncertain about"],
@@ -1034,19 +1352,6 @@ Return format:
             parsed_response = json.loads(json_str)
             
             processed_cards = parsed_response.get('processed_cards', [])
-            
-            # Log changes
-            for card in processed_cards:
-                note_id = card.get('note_id')
-                changes = card.get('changes_made', [])
-                uncertain = card.get('uncertain_changes', [])
-                
-                self.changes_log.append({
-                    'note_id': note_id,
-                    'timestamp': datetime.now().isoformat(),
-                    'changes': changes,
-                    'uncertain_changes': uncertain
-                })
             
             return processed_cards
             
@@ -1081,10 +1386,6 @@ Return format:
                     updated_fields['Audio'] = audio_tag
                     card['updated_fields'] = updated_fields
                     
-                    changes = card.get('changes_made', [])
-                    changes.append(f"Added Forvo audio for '{word}' ({audio_data['votes']} votes)")
-                    card['changes_made'] = changes
-                    
                     print(f"  ✓ Audio added: {audio_data['filename']}")
                 else:
                     print(f"  ✗ Failed to store audio file for '{word}'")
@@ -1096,8 +1397,8 @@ Return format:
         # Remove HTML tags
         clean_text = re.sub(r'<[^>]+>', '', front_field)
         
-        # Remove articles (en, ett, den, det)
-        clean_text = re.sub(r'^(en|ett|den|det)\s+', '', clean_text, flags=re.IGNORECASE)
+        # Remove articles
+        clean_text = re.sub(r'^(en|ett|den|det|att)\s+', '', clean_text, flags=re.IGNORECASE)
         
         # Remove parentheses and their contents
         clean_text = re.sub(r'\([^)]*\)', '', clean_text)
@@ -1109,16 +1410,15 @@ Return format:
 class AnkiDeckFixer:
     """Main class to orchestrate the deck fixing process"""
     
-    def __init__(self, claude_api_key: str, forvo_api_key: Optional[str] = None, create_backup: bool = True):
+    def __init__(self, claude_api_key: str, forvo_api_key: Optional[str] = None, should_create_backup: bool = True):
         self.anki = AnkiConnector()
         self.processor = SwedishCardProcessor(claude_api_key, forvo_api_key, self.anki)
         self.backup_created = False
-        self.create_backup = create_backup
+        self.should_create_backup = should_create_backup
         
     def create_backup(self, deck_name: str) -> Optional[str]:
         """Create backup of the deck if enabled"""
-        if not self.create_backup:
-            print("Backup creation disabled")
+        if not self.should_create_backup:
             return None
             
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1126,8 +1426,10 @@ class AnkiDeckFixer:
         backup_path = f"./{backup_name}.apkg"
         
         try:
+            print(f"Creating backup of deck '{deck_name}' as '{backup_path}'...")
+            start_time = time.time()
             self.anki.export_deck(deck_name, backup_path)
-            print(f"✓ Backup created: {backup_path}")
+            print(f"✓ Backup created: {backup_path} in {time.time() - start_time:.2f} seconds")
             self.backup_created = True
             return backup_path
         except Exception as e:
@@ -1147,9 +1449,13 @@ class AnkiDeckFixer:
         backup_path = self.create_backup(deck_name)
         
         # Get all cards in deck
-        card_ids = self.anki.get_cards_in_deck(deck_name)
+        card_ids = self.anki.get_cards_in_deck_without_tag(deck_name, "reviewed")
         total_cards = len(card_ids)
         print(f"Found {total_cards} cards in deck '{deck_name}'")
+        
+        # Sort cards to prioritize important ones
+        print("Sorting cards by priority...")
+        card_ids = self._sort_cards_by_priority(card_ids)
         
         if start_from > 0:
             card_ids = card_ids[start_from:]
@@ -1181,7 +1487,7 @@ class AnkiDeckFixer:
                     enriched_cards.append(card)
                 
                 # Process with Claude
-                processed_cards = self.processor.process_card_batch(enriched_cards)
+                processed_cards, full_log = self.processor.process_card_batch(enriched_cards)
                 
                 if not processed_cards:
                     print("No changes suggested by Claude for this batch")
@@ -1205,11 +1511,6 @@ class AnkiDeckFixer:
                             if old_value != new_value:
                                 DiffFormatter.print_field_changes(field_name, old_value, new_value)
                         
-                        # Show general changes
-                        changes = card.get('changes_made', [])
-                        if changes:
-                            print(f"  Changes: {', '.join(changes)}")
-                        
                         if card.get('uncertain_changes'):
                             print(f"  \033[93mUncertain: {', '.join(card['uncertain_changes'])}\033[0m")
                 
@@ -1232,12 +1533,17 @@ class AnkiDeckFixer:
                     try:
                         note_id = card['note_id']
                         updated_fields = card.get('updated_fields', {})
-                        model_change = card.get('model_change')
+                        model_change = card.get('model_change', card['note'].get('modelName'))
                         
                         if updated_fields:
-                            self.anki.update_note_fields(note_id, updated_fields, model_change)
-                            changes_applied += 1
+                            for field_name, new_value in updated_fields.items():
+                                new_value = new_value.replace('\n', '<br>')
+                                updated_fields[field_name] = new_value
                             
+                            tags = self.anki.get_note_tags(note_id) + ['reviewed']
+                            self.anki.update_note(note_id, updated_fields, model_change, tags)
+                            changes_applied += 1
+                        
                     except Exception as e:
                         print(f"✗ Failed to update note {card['note_id']}: {e}")
                 
@@ -1257,34 +1563,45 @@ class AnkiDeckFixer:
             print(f"Backup created at: {backup_path}")
         else:
             print("No backup was created")
-        
-        # Save change log
-        log_file = f"changes_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-        with open(log_file, 'w', encoding='utf-8') as f:
-            json.dump(self.processor.changes_log, f, indent=2, ensure_ascii=False)
-        print(f"Change log saved to: {log_file}")
     
     def process_cards_for_review(self, deck_name: str, batch_size: int = 10, start_from: int = 0) -> Dict[str, Any]:
         """Process cards and return results for web interface review"""
         
         # Verify deck exists
         deck_names = self.anki.get_deck_names()
+        
         if deck_name not in deck_names:
             raise Exception(f"Deck '{deck_name}' not found. Available decks: {', '.join(deck_names)}")
         
         # Create backup if enabled
-        backup_path = self.create_backup(deck_name)
+        self.create_backup(deck_name)
         
-        # Get all cards in deck
-        card_ids = self.anki.get_cards_in_deck(deck_name)
-        total_cards = len(card_ids)
+        # Get all non-reviewed cards in deck
+        card_ids = self.anki.get_cards_in_deck_without_tag(deck_name, "reviewed")
+        
+        if len(card_ids) == 0:
+            print("Found 0 cards to review")
+            return {
+                'deck_name': deck_name,
+                'batch_size': batch_size,
+                'start_from': start_from,
+                'processed_count': 0,
+                'processed_cards': [],
+                'full_log': ''
+            }
+        
+        # Sort cards to prioritize important ones
+        print(f"Sorting {len(card_ids)} cards by priority...")
+        card_ids = self._sort_cards_by_priority(card_ids)
         
         if start_from > 0:
             card_ids = card_ids[start_from:]
+            print(f"Sliced to start from {start_from}, now have {len(card_ids)} cards")
         
         # Limit to batch_size for processing
         if len(card_ids) > batch_size:
             card_ids = card_ids[:batch_size]
+            print(f"Batch size: {batch_size}, processing {len(card_ids)} cards")
         
         # Get card info
         cards_info = self.anki.get_card_info(card_ids)
@@ -1302,7 +1619,9 @@ class AnkiDeckFixer:
             enriched_cards.append(card)
         
         # Process with Claude
-        processed_cards = self.processor.process_card_batch(enriched_cards)
+        print("Processing with Claude API...")
+        processed_cards, full_log = self.processor.process_card_batch(enriched_cards)
+        print(f"Claude processing complete, got {len(processed_cards)} processed cards")
         
         # Add original fields for comparison
         for processed_card in processed_cards:
@@ -1311,15 +1630,28 @@ class AnkiDeckFixer:
             if original_card:
                 processed_card['original_fields'] = original_card['note']['fields']
         
+        # Sanitize processed cards for JSON serialization
+        def sanitize_for_json(obj):
+            """Recursively sanitize object for JSON serialization"""
+            if isinstance(obj, dict):
+                return {k: sanitize_for_json(v) for k, v in obj.items()}
+            elif isinstance(obj, list):
+                return [sanitize_for_json(item) for item in obj]
+            elif isinstance(obj, str):
+                # Replace problematic characters that might break JSON
+                return obj.replace('\r\n', '\n').replace('\r', '\n').replace('\x00', '')
+            else:
+                return obj
+        
+        sanitized_cards = sanitize_for_json(processed_cards)
+        
         return {
             'deck_name': deck_name,
-            'total_cards_in_deck': total_cards,
             'batch_size': batch_size,
             'start_from': start_from,
             'processed_count': len(processed_cards),
-            'backup_path': backup_path,
-            'timestamp': datetime.now().isoformat(),
-            'processed_cards': processed_cards
+            'processed_cards': sanitized_cards,
+            'full_log': full_log
         }
     
     def apply_selected_changes(self, changes_data: Dict[str, Any]) -> Dict[str, Any]:
@@ -1339,29 +1671,88 @@ class AnkiDeckFixer:
                 model_change = card.get('model_change')
                 
                 if updated_fields:
-                    self.anki.update_note_fields(note_id, updated_fields, model_change)
+                    for field_name, new_value in updated_fields.items():
+                        new_value = new_value.replace('\n', '<br>')
+                        updated_fields[field_name] = new_value
+                    
+                    tags = self.anki.get_note_tags(note_id) + ['reviewed']
+                    self.anki.update_note(note_id, updated_fields, model_change, tags)
                     results['applied_count'] += 1
-                    
-                    # Log the change
-                    self.processor.changes_log.append({
-                        'note_id': note_id,
-                        'timestamp': datetime.now().isoformat(),
-                        'changes': card.get('changes_made', []),
-                        'applied_via': 'web_interface'
-                    })
-                    
+            
             except Exception as e:
                 results['failed_count'] += 1
                 results['errors'].append(f"Note {card.get('note_id', 'unknown')}: {str(e)}")
         
-        # Save change log
-        if self.processor.changes_log:
-            log_file = f"changes_log_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
-            with open(log_file, 'w', encoding='utf-8') as f:
-                json.dump(self.processor.changes_log, f, indent=2, ensure_ascii=False)
-            results['log_file'] = log_file
-        
         return results
+    
+    def _sort_cards_by_priority(self, card_ids: List[int]) -> List[int]:
+        if not card_ids:
+            return card_ids
+        
+        print(f"Getting detailed info for {len(card_ids)} cards to sort...")
+        
+        # Get card info including stats
+        cards_info = self.anki.get_card_info(card_ids)
+        
+        # Get note info to check flags
+        note_ids = list(set([card['note'] for card in cards_info]))
+        notes_info = self.anki.get_note_info(note_ids)
+        notes_dict = {note['noteId']: note for note in notes_info}
+        
+        # Create sorting data
+        card_sort_data = []
+        for card in cards_info:
+            note_id = card['note']
+            note = notes_dict.get(note_id, {})
+
+            has_flag_1 = False
+            
+            if note.get('flags') is not None:
+                # Check if note has flag 1 ("behöver utvidgas")
+                print("Flags:", note.get('flags'))
+                has_flag_1 = note.get('flags') == 1
+            
+            # Get review count (reps field)
+            review_count = card.get('reps', 0)
+            
+            # Get creation date (id field divided by 1000 gives proxy for timestamp)
+            creation_timestamp = card.get('id', 0) // 1000
+            
+            card_sort_data.append({
+                'id': card['cardId'],
+                'has_flag_1': has_flag_1,
+                'review_count': review_count,
+                'creation_timestamp': creation_timestamp,
+                'less_than_3_reviews': review_count < 3
+            })
+        
+        # Sort by priority:
+        # 1. Flag 1 cards first (has_flag_1=True)
+        # 2. Then cards with <3 reviews (less_than_3_reviews=True)  
+        # 3. Within each group, sort by creation date (ascending - older first)
+        # 4. All other cards last
+        
+        def sort_key(card_data):
+            return (
+                not card_data['has_flag_1'],  # False (flag 1) comes before True (no flag 1)
+                not card_data['less_than_3_reviews'],  # False (<3 reviews) comes before True (>=3 reviews)
+                card_data['creation_timestamp']  # Ascending creation date
+            )
+        
+        card_sort_data.sort(key=sort_key)
+        
+        sorted_card_ids = [card_data['id'] for card_data in card_sort_data]
+        
+        # Log sorting results
+        flag_1_count = sum(1 for card in card_sort_data if card['has_flag_1'])
+        low_review_count = sum(1 for card in card_sort_data if card['less_than_3_reviews'] and not card['has_flag_1'])
+        
+        print(f"Sorting complete:")
+        print(f"  - {flag_1_count} cards with flag 1 (prioritized first)")
+        print(f"  - {low_review_count} cards with <3 reviews (prioritized second)")
+        print(f"  - {len(card_ids) - flag_1_count - low_review_count} other cards (prioritized last)")
+        
+        return sorted_card_ids
 
 def main():
     """Main entry point"""
@@ -1385,8 +1776,8 @@ def main():
     
     # Initialize fixer
     try:
-        create_backup = not args.no_backup
-        fixer = AnkiDeckFixer(claude_api_key, forvo_api_key, create_backup)
+        should_create_backup = not args.no_backup
+        fixer = AnkiDeckFixer(claude_api_key, forvo_api_key, should_create_backup)
     except Exception as e:
         print(f"✗ Failed to initialize: {e}")
         return
@@ -1462,7 +1853,7 @@ def main():
         print(f"  Deck: {deck_name}")
         print(f"  Batch size: {batch_size}")
         print(f"  Start from: card {args.start_from if args.start_from > 0 else 1}")
-        print(f"  Backup: {'enabled' if create_backup else 'disabled'}")
+        print(f"  Backup: {'enabled' if should_create_backup else 'disabled'}")
         print(f"  Audio: {'enabled' if forvo_api_key else 'disabled'}")
         
         if not args.deck:
@@ -1481,7 +1872,7 @@ def main():
         print("\n\nProcessing interrupted by user.")
         if fixer.backup_created:
             print("Your original deck is safely backed up.")
-        elif create_backup:
+        elif should_create_backup:
             print("No backup was created as processing was interrupted early.")
     except Exception as e:
         print(f"✗ Error: {e}")
