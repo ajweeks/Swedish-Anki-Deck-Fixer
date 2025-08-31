@@ -24,12 +24,9 @@ import time
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 import anthropic
-import sys
 import difflib
 import re
 import argparse
-import urllib.request
-import urllib.parse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import webbrowser
@@ -42,7 +39,7 @@ class AnkiConnector:
     def __init__(self, url="http://localhost:8765"):
         self.url = url
         
-    def request(self, action: str, **params) -> Dict[str, Any]:
+    def request(self, action: str, **params) -> Dict:
         """Send request to AnkiConnect"""
         payload = {
             "action": action,
@@ -51,7 +48,7 @@ class AnkiConnector:
         }
         
         try:
-            response = requests.post(self.url, json=payload)
+            response : requests.Response = requests.post(self.url, json=payload)
             response.raise_for_status()
             result = response.json()
             
@@ -62,34 +59,38 @@ class AnkiConnector:
         except requests.exceptions.ConnectionError:
             raise Exception("Cannot connect to Anki. Make sure Anki is running with AnkiConnect add-on installed.")
     
-    def get_deck_names(self) -> List[str]:
+    def get_deck_names(self) -> Dict:
         """Get all deck names"""
         return self.request("deckNames")
     
-    def get_cards_in_deck(self, deck_name: str) -> List[int]:
+    def get_cards_in_deck(self, deck_name: str) -> Dict:
         """Get all card IDs in a deck"""
         return self.request("findCards", query=f"deck:\"{deck_name}\"")
     
-    def get_cards_in_deck_with_tag(self, deck_name: str, tag: str) -> List[int]:
+    def get_cards_in_deck_with_tag(self, deck_name: str, tag: str) -> Dict:
         """Get all card IDs in a deck"""
         return self.request("findCards", query=f"deck:\"{deck_name}\" tag:{tag}")
     
-    def get_cards_in_deck_without_tag(self, deck_name: str, tag: str) -> List[int]:
+    def get_cards_in_deck_without_tag(self, deck_name: str, tag: str) -> Dict:
         """Get all card IDs in a deck"""
         return self.request("findCards", query=f"deck:\"{deck_name}\" -tag:{tag}")
     
-    def get_card_info(self, card_ids: List[int]) -> List[Dict]:
+    def get_cards_in_deck_with_search(self, deck_name: str, search: str) -> Dict:
+        """Get all card IDs in a deck"""
+        return self.request("findCards", query=f"deck:\"{deck_name}\" {search}")
+    
+    def get_card_info(self, card_ids: List[int]) -> Dict:
         """Get card information"""
         return self.request("cardsInfo", cards=card_ids)
     
-    def get_note_tags(self, note_id: int) -> List[str]:
+    def get_note_tags(self, note_id: int) -> Dict:
         """Get note tags"""
         params = {
             "note": note_id
         }
         return self.request("getNoteTags", **params)
     
-    def update_note_tags(self, note_id: int, tags: List[str]):
+    def update_note_tags(self, note_id: int, tags: List[str]) -> Dict:
         """Update note tags"""
         params = {
             "note": {
@@ -107,7 +108,7 @@ class AnkiConnector:
         print("Updated tags:", updated_tags)
         self.update_note_tags(note_id, updated_tags)
     
-    def update_note(self, note_id: int, fields: Dict[str, str], model_name: str, tags: List[str]):
+    def update_note(self, note_id: int, fields: Dict[str, str], model_name: str, tags: List[str]) -> Dict:
         """Update note fields"""
         params = {
             "note": {
@@ -121,7 +122,7 @@ class AnkiConnector:
         return self.request("updateNoteModel", **params)
     
     
-    def update_note_fields(self, note_id: int, fields: Dict[str, str], model_name: Optional[str] = None):
+    def update_note_fields(self, note_id: int, fields: Dict[str, str], model_name: Optional[str] = None) -> Dict:
         """Update note fields"""
         params = {
             "note": {
@@ -134,18 +135,18 @@ class AnkiConnector:
             
         return self.request("updateNoteFields", **params)
     
-    def create_deck(self, deck_name: str):
+    def create_deck(self, deck_name: str) -> Dict:
         """Create a new deck"""
         return self.request("createDeck", deck=deck_name)
     
-    def export_deck(self, deck_name: str, path: str):
+    def export_deck(self, deck_name: str, path: str) -> Dict:
         """Export deck to file"""
         # Ensure the path is absolute and in current directory
         if not os.path.isabs(path):
             path = os.path.abspath(path)
         return self.request("exportPackage", deck=deck_name, path=path, includeSched=False)
     
-    def get_note_info(self, note_ids: List[int]) -> List[Dict]:
+    def get_note_info(self, note_ids: List[int]) -> Dict:
         """Get note information"""
         return self.request("notesInfo", notes=note_ids)
     
@@ -505,7 +506,6 @@ class WebServer(BaseHTTPRequestHandler):
         .field-input { width: 100%; min-height: 220px; padding: 5px; border: 1px solid #ddd; border-radius: 8px; font-family: inherit; font-size: 14px; resize: vertical; transition: border-color 0.3s ease; }
         .field-input:focus { outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1); }
         .changes-list { background: #e8f4f8; border-left: 4px solid #17a2b8; padding: 5px; padding-left: 25px; margin-top: 15px; border-radius: 0 8px 8px 0; }
-        .uncertain-changes { background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin-top: 10px; border-radius: 0 8px 8px 0; }
         .stats { display: flex; gap: 20px; align-items: center; font-weight: 500; color: #495057; }
         .stat-item { display: flex; align-items: center; gap: 8px; }
         .empty-state { text-align: center; padding: 60px 20px; color: #6c757d; }
@@ -551,7 +551,6 @@ class WebServer(BaseHTTPRequestHandler):
             <div class="stats" id="statsDisplay" style="display: none;">
                 <div class="stat-item"><span>📊</span><span>Total: <span id="totalCards">0</span></span></div>
                 <div class="stat-item"><span>✅</span><span>Selected: <span id="selectedCards">0</span></span></div>
-                <div class="stat-item"><span>⚠️</span><span>Uncertain: <span id="uncertainCards">0</span></span></div>
             </div>
             <div class="control-group" id="actionControls" style="display: none;">
                 <button class="btn btn-secondary" onclick="selectAll()">Select All</button>
@@ -668,7 +667,7 @@ class WebServer(BaseHTTPRequestHandler):
                 }
             } catch (error) {
                 console.error('Error loading decks:', error);
-                alert('Error loading decks. Make sure Anki is running with AnkiConnect.');
+                alert('Error loading decks. Make sure Anki is running with AnkiConnect.' + error.message);
             }
         }
 
@@ -819,7 +818,6 @@ class WebServer(BaseHTTPRequestHandler):
             cardDiv.className = 'card';
             cardDiv.id = `card-${index}`;
 
-            const hasUncertain = card.uncertain_changes && card.uncertain_changes.length > 0;
             const isSelected = selectedCards.has(index);
             
             if (isSelected) {
@@ -835,13 +833,11 @@ class WebServer(BaseHTTPRequestHandler):
                             </div>
                         </div>
                         Card ${index + 1}: ${getCardTitle(card)}
-                        ${hasUncertain ? '<span style="color: #ffc107;">⚠️ Uncertain</span>' : ''}
                     </div>
                 </div>
                 <div class="card-body">
                     ${renderFields(card, index)}
                     ${renderReferences(card, index)}
-                    ${renderChanges(card)}
                 </div>
             `;
 
@@ -960,23 +956,6 @@ class WebServer(BaseHTTPRequestHandler):
                 
                 return referencesHtml;
         }
-        
-        function renderChanges(card) {
-            let changesHtml = '';
-            
-            if (card.uncertain_changes && card.uncertain_changes.length > 0) {
-                changesHtml += `
-                    <div class="uncertain-changes">
-                        <h4>Uncertain Changes:</h4>
-                        <ul>
-                            ${card.uncertain_changes.map(change => `<li>${escapeHtml(change)}</li>`).join('')}
-                        </ul>
-                    </div>
-                `;
-            }
-            
-            return changesHtml;
-        }
 
         function toggleCard(index) {
             const checkbox = document.querySelector(`#card-${index} .custom-checkbox`);
@@ -1062,11 +1041,6 @@ class WebServer(BaseHTTPRequestHandler):
         function updateStats() {
             document.getElementById('totalCards').textContent = cardData.length;
             document.getElementById('selectedCards').textContent = selectedCards.size;
-            
-            const uncertainCount = cardData.filter(card => 
-                card.uncertain_changes && card.uncertain_changes.length > 0
-            ).length;
-            document.getElementById('uncertainCards').textContent = uncertainCount;
             
             const applyBtn = document.getElementById('applyBtn');
             applyBtn.disabled = selectedCards.size === 0;
@@ -1226,6 +1200,7 @@ Environment Variables:
     parser.add_argument('--list-decks', action='store_true', help='List available decks and exit')
     parser.add_argument('--web', action='store_true', help='Start web interface')
     parser.add_argument('--port', type=int, default=8080, help='Port for web interface (default: 8080)')
+    parser.add_argument('--word_list', type=str, help='Existing words in the deck separated by commas to modify')
     
     return parser.parse_args()
 
@@ -1267,6 +1242,10 @@ class SwedishCardProcessor:
             )
             print("Claude API call completed successfully")
             
+            print("response content: ", len(response.content))
+            for i in range(len(response.content)):
+                print(f"content[{i}]: ", response.content[i])
+            
             # Store raw response for debugging
             raw_claude_response = response.content[0].text
             
@@ -1292,27 +1271,26 @@ class SwedishCardProcessor:
         rules = """
 ## Rules
 
-You are a language expert tasked with helping me build a Swedish flash card deck that I study to memorize words and phrases. Your current task is to go through my deck and fix it up according to the following rules:
+You are a language expert tasked with helping me build a Swedish flash card deck that I study to memorize words and phrases. Your current task is to go through my deck and improve it according to the following rules:
 
-1. A card ending in "autogenerated" should be entirely re-written. Find a definition and related words from wiktionary, synonyms from synonyms.se.
-2. An example sentence in quotations prefixed with "t.ex." should be simply be in parenthesis, without the prefix.
-3. A list of different defintions separated by "or, " should be converted into a numbered list with each item on a new line.
-4. When a word has several definitions indicate the total count in the front field, for example: "En skorpa (2)".
-5. Synonyms (in parenthesis coming after "syn: ") and additional information (such as "se även: " or related words) should use #C2C2C2 as the text colour) and appear on a new line after the relevant definition.
-6. Less common usages should be indicated as such, coming last in the list of definitions after a "mindre vanliga: " line.
-7. Any sound tag beginning with "sound:hypertts" should be deleted. Then forvo should be checked to see if a relevant file exists there to replace it. No audio is better than this existing file.
-9. Fix the spelling for any misspelled words.
-10. Example sentences should be wrapped in quotations, and normally each be on their own line. The word in question should be in italics (surrounded with <i></i> HTML tags). The sentence (or partial sentence) should be as long as it needs to to show the word's usage but not longer.
-11. If a word is reflexive, indicate that with "(refl)" at the start of the line, after the number.
-12. Very uncommon words that are unlikely to be seen or heard today can be marked with flag 7 ("sällsynt").
-13. Audio tags shouldn't be in the "front" field but rather in a separate field called "Audio". If the card type is "Basic" then it should be changed to "Basic (with audio)" so it has this additional field. 
+* A card ending in "autogenerated" should be entirely re-written. Find a definition and related words from wiktionary, synonyms from synonyms.se.
+* An example sentence in quotations prefixed with "t.ex." should be simply be in parenthesis, without the prefix.
+* A list of different defintions separated by "or, " should be converted into a numbered list with each item on a new line.
+* When a word has several definitions indicate the total count in the front field, for example: "En skorpa (2)".
+* Synonyms (in parenthesis coming after "syn: ") and additional information (such as "se även: " or related words) should use #C2C2C2 as the text colour) and appear on a new line after the relevant definition.
+* Less common usages should be indicated as such, coming last in the list of definitions after a "mindre vanliga: " line.
+* Any sound tag beginning with "[sound:hypertts" should be deleted. E.g. "En bena [sound:hypertts-0296ea3c66874a48741b48088e46c3e8163903cbb099573a6a04341c.mp3]" becomes just "En bena".
+* Fix the spelling for any misspelled words.
+* Example sentences should be wrapped in quotations, and normally each be on their own line. The word in question should be in italics (surrounded with <i></i> HTML tags). The sentence (or partial sentence) should be as long as it needs to to show the word's usage but not longer.
+* If a word is reflexive, indicate that with "(refl)" at the start of the line, after the number.
+* Very uncommon words that are unlikely to be seen or heard today can be marked with flag 7 ("sällsynt").
 
 For each card you review go through each rule and apply a fix when relevant.
 
 ## General guidelines
-Always include the relevant preposition as this information is crucial to learn alongside the word plus the word's article (en eller ett) if it is a noun.
+Always include a verb's relevant preposition (e.g. prata i telefon) and a nounn's article (e.g. en bil).
 
-Keep the cards short and concise, yet with enough info to capture the precise meaning of a word or phrase. A single word in English most often doesn't suffice to comprehensively define a Swedish word in all its usages, conjugations, etc. I want to be able to quickly review cards and only rely on the additional information when a card isn't sticking. The most essential information should come first and be most prominent.
+Keep the cards short and concise, yet with sufficient detail to capture the precise meaning of a word or phrase. I want to be able to quickly review cards and only rely on the additional information when a card isn't sticking. The most essential information should come first and be most prominent.
 """
         
         prompt = f"""{rules}
@@ -1322,15 +1300,12 @@ Please process the following cards and return only the results strictly in JSON 
 Cards to process:
 {json.dumps(card_data, indent=2, ensure_ascii=False)}
 
-Return format: (output nothing else)
+Return format example: (output nothing else)
 {{
   "processed_cards": [
     {{
       "note_id": 123,
-      "updated_fields": {{"Front": "new front", "Back": "new back", "audio": "new audio"}},
-      "model_change": "basic (with audio)",  // only if model needs to change
-      "uncertain_changes": ["things you're uncertain about"],
-      "needs_flag_7": true  // if word should be marked as rare
+      "updated_fields": {{"Front": "En bil", "Back": "A car ..."}},
     }}
   ]
 }}
@@ -1436,30 +1411,8 @@ class AnkiDeckFixer:
             print(f"✗ Failed to create backup: {e}")
             raise
     
-    def process_deck(self, deck_name: str, batch_size: int = 10, start_from: int = 0):
+    def process_deck(self, deck_name: str, card_ids: List[int], batch_size: int = 10):
         """Process the entire deck in batches"""
-        
-        # Verify deck exists
-        deck_names = self.anki.get_deck_names()
-        if deck_name not in deck_names:
-            print(f"✗ Deck '{deck_name}' not found. Available decks: {', '.join(deck_names)}")
-            return
-        
-        # Create backup if enabled
-        backup_path = self.create_backup(deck_name)
-        
-        # Get all cards in deck
-        card_ids = self.anki.get_cards_in_deck_without_tag(deck_name, "reviewed")
-        total_cards = len(card_ids)
-        print(f"Found {total_cards} cards in deck '{deck_name}'")
-        
-        # Sort cards to prioritize important ones
-        print("Sorting cards by priority...")
-        card_ids = self._sort_cards_by_priority(card_ids)
-        
-        if start_from > 0:
-            card_ids = card_ids[start_from:]
-            print(f"Starting from card {start_from + 1}")
         
         # Process in batches
         processed_count = 0
@@ -1507,12 +1460,9 @@ class AnkiDeckFixer:
                         original_fields = original_card['note']['fields']
                         
                         for field_name, new_value in updated_fields.items():
-                            old_value = original_fields.get(field_name, '')
+                            old_value = original_fields.get(field_name, {}).get('value', '')
                             if old_value != new_value:
                                 DiffFormatter.print_field_changes(field_name, old_value, new_value)
-                        
-                        if card.get('uncertain_changes'):
-                            print(f"  \033[93mUncertain: {', '.join(card['uncertain_changes'])}\033[0m")
                 
                 # Ask for confirmation
                 response = input(f"\nApply these changes to batch {batch_num}? (y/n/s=skip/q=quit): ").lower()
@@ -1531,16 +1481,26 @@ class AnkiDeckFixer:
                 changes_applied = 0
                 for card in processed_cards:
                     try:
+                        print(f"\nApplying changes to note ID {card}...")
+                        
                         note_id = card['note_id']
                         updated_fields = card.get('updated_fields', {})
                         model_change = card.get('model_change', card['note'].get('modelName'))
+                        
+                        print(f"Debug: note_id={note_id}, updated_fields={updated_fields}, model_change={model_change}")
                         
                         if updated_fields:
                             for field_name, new_value in updated_fields.items():
                                 new_value = new_value.replace('\n', '<br>')
                                 updated_fields[field_name] = new_value
+                                print(f"Debug: update={repr(new_value)} for field {field_name}")
                             
-                            tags = self.anki.get_note_tags(note_id) + ['reviewed']
+                            print(f"Debug: updated_fields={updated_fields}")
+                            
+                            prev_tags = self.anki.get_note_tags(note_id)
+                            print(f"prev tags: {type(prev_tags)}")
+                            tags = prev_tags + ['reviewed']
+                            print(f"Tags: {tags}")
                             self.anki.update_note(note_id, updated_fields, model_change, tags)
                             changes_applied += 1
                         
@@ -1559,10 +1519,6 @@ class AnkiDeckFixer:
         
         print(f"=== Processing Complete ===")
         print(f"Total cards processed: {processed_count}")
-        if backup_path:
-            print(f"Backup created at: {backup_path}")
-        else:
-            print("No backup was created")
     
     def process_cards_for_review(self, deck_name: str, batch_size: int = 10, start_from: int = 0) -> Dict[str, Any]:
         """Process cards and return results for web interface review"""
@@ -1814,9 +1770,6 @@ def main():
     # Get available decks
     try:
         decks = fixer.anki.get_deck_names()
-        print("Available decks:")
-        for i, deck in enumerate(decks, 1):
-            print(f"  {i}. {deck}")
         
         # Get deck selection
         if args.deck:
@@ -1825,6 +1778,10 @@ def main():
                 print(f"✗ Deck '{deck_name}' not found")
                 return
         else:
+            print("Available decks:")
+            for i, deck in enumerate(decks, 1):
+                print(f"  {i}. {deck}")
+            
             deck_choice = input("\nEnter deck name or number: ").strip()
             
             # Parse choice
@@ -1865,15 +1822,45 @@ def main():
         print(f"\nStarting to process deck '{deck_name}'")
         print("Press Ctrl+C at any time to stop safely")
         
-        # Process the deck
-        fixer.process_deck(deck_name, batch_size, start_from)
+        # Verify deck exists
+        deck_names = fixer.anki.get_deck_names()
+        if deck_name not in deck_names:
+            print(f"✗ Deck '{deck_name}' not found. Available decks: {', '.join(deck_names)}")
+            return
+        
+        # Create backup if enabled
+        fixer.create_backup(deck_name)
+        
+        card_ids = []
+        
+        if args.word_list:
+            # Use provided word list to filter cards
+            existing_words = [word.strip() for word in args.word_list.split(',') if word.strip()]
+            print(f"Filtering cards to only include words: {', '.join(existing_words)}")
+            for word in existing_words:
+                search = f'front:*{word}*'
+                results = fixer.anki.get_cards_in_deck_with_search(deck_name, search)
+                if results:
+                    print(f"Found {len(results)} cards for word '{word}'")
+                    card_ids.extend(results)
+            print(f"Found {len(card_ids)} matching cards in deck '{deck_name}'")
+        else:
+            # Get all cards in deck
+            card_ids : List[int] = fixer.anki.get_cards_in_deck_without_tag(deck_name, "reviewed")
+            print(f"Found {len(card_ids)} cards in deck '{deck_name}'")
+        
+            # Sort cards to prioritize important ones
+            print("Sorting cards by priority...")
+            card_ids = fixer._sort_cards_by_priority(card_ids)
+        
+        if start_from > 0:
+            card_ids = card_ids[start_from:]
+            print(f"Starting from card {start_from + 1}")
+        
+        fixer.process_deck(deck_name, card_ids, batch_size)
         
     except KeyboardInterrupt:
         print("\n\nProcessing interrupted by user.")
-        if fixer.backup_created:
-            print("Your original deck is safely backed up.")
-        elif should_create_backup:
-            print("No backup was created as processing was interrupted early.")
     except Exception as e:
         print(f"✗ Error: {e}")
 
