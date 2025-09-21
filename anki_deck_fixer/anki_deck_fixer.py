@@ -39,7 +39,7 @@ class AnkiConnector:
     def __init__(self, url="http://localhost:8765"):
         self.url = url
         
-    def request(self, action: str, **params) -> Dict:
+    def request(self, action: str, **params):
         """Send request to AnkiConnect"""
         payload = {
             "action": action,
@@ -54,8 +54,9 @@ class AnkiConnector:
             
             if result.get("error"):
                 raise Exception(f"AnkiConnect error: {result['error']}")
-                
-            return result.get("result")
+            
+            r = result.get("result")
+            return r
         except requests.exceptions.ConnectionError:
             raise Exception("Cannot connect to Anki. Make sure Anki is running with AnkiConnect add-on installed.")
     
@@ -66,14 +67,6 @@ class AnkiConnector:
     def get_cards_in_deck(self, deck_name: str) -> Dict:
         """Get all card IDs in a deck"""
         return self.request("findCards", query=f"deck:\"{deck_name}\"")
-    
-    def get_cards_in_deck_with_tag(self, deck_name: str, tag: str) -> Dict:
-        """Get all card IDs in a deck"""
-        return self.request("findCards", query=f"deck:\"{deck_name}\" tag:{tag}")
-    
-    def get_cards_in_deck_without_tag(self, deck_name: str, tag: str) -> Dict:
-        """Get all card IDs in a deck"""
-        return self.request("findCards", query=f"deck:\"{deck_name}\" -tag:{tag}")
     
     def get_cards_in_deck_with_search(self, deck_name: str, search: str) -> Dict:
         """Get all card IDs in a deck"""
@@ -108,19 +101,17 @@ class AnkiConnector:
         print("Updated tags:", updated_tags)
         self.update_note_tags(note_id, updated_tags)
     
-    def update_note(self, note_id: int, fields: Dict[str, str], model_name: str, tags: List[str]) -> Dict:
+    def update_note(self, note_id: int, fields: Dict[str, str], tags: List[str]) -> Dict:
         """Update note fields"""
         params = {
             "note": {
                 "id": note_id,
                 "fields": fields,
-                "modelName": model_name,
                 "tags": tags
             }
         }
         print("updateNote: ", params)
-        return self.request("updateNoteModel", **params)
-    
+        return self.request("updateNote", **params)
     
     def update_note_fields(self, note_id: int, fields: Dict[str, str], model_name: Optional[str] = None) -> Dict:
         """Update note fields"""
@@ -134,6 +125,21 @@ class AnkiConnector:
             params["note"]["modelName"] = model_name
             
         return self.request("updateNoteFields", **params)
+    
+    def add_note(self, deck_name: str, model_name: str, fields: Dict[str, str], tags: List[str]) -> Dict:
+        """Add a new note"""
+        params = {
+            "note": {
+                "deckName": deck_name,
+                "modelName": model_name,
+                "fields": fields,
+                "tags": tags,
+                "options": {
+                    "allowDuplicate": True,
+                },
+            }
+        }
+        return self.request("addNote", **params)
     
     def create_deck(self, deck_name: str) -> Dict:
         """Create a new deck"""
@@ -372,6 +378,8 @@ class WebServer(BaseHTTPRequestHandler):
             batch_size = data.get('batch_size', 10)
             start_from = data.get('start_from', 0)
             create_backup = data.get('create_backup', True)
+            word_list = data.get('word_list')
+            flagged_only = data.get('flagged_only')
             
             if not deck_name:
                 raise Exception("deck_name is required")
@@ -384,7 +392,10 @@ class WebServer(BaseHTTPRequestHandler):
             self.fixer.should_create_backup = create_backup
             
             try:
-                results = self.fixer.process_cards_for_review(deck_name, batch_size, start_from)
+                if word_list:
+                    batch_size = len(word_list)  # Process all words in one go if word_list is provided
+                    start_from = 0
+                results = self.fixer.process_cards_for_review(deck_name, batch_size, start_from, word_list, flagged_only)
                 
                 self.send_json_response(results)
             finally:
@@ -461,7 +472,7 @@ class WebServer(BaseHTTPRequestHandler):
     <title>Anki Card Fixer - Web Interface</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); min-height: 100vh; padding: 20px; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #232728; min-height: 100vh; padding: 20px; }
         .container { max-width: 1200px; margin: 0 auto; background: white; border-radius: 15px; box-shadow: 0 20px 40px rgba(0,0,0,0.1); overflow: hidden; }
         .header { background: linear-gradient(135deg, #2c3e50 0%, #34495e 100%); color: white; padding: 30px; text-align: center; }
         .header h1 { font-size: 2.5rem; margin-bottom: 10px; font-weight: 300; }
@@ -470,13 +481,13 @@ class WebServer(BaseHTTPRequestHandler):
         .control-group { display: flex; align-items: center; gap: 15px; }
         .btn { padding: 12px 24px; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; transition: all 0.3s ease; text-decoration: none; display: inline-flex; align-items: center; gap: 8px; }
         .btn:disabled { opacity: 0.6; cursor: not-allowed; }
-        .btn-primary { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; }
+        .btn-primary { background: linear-gradient(135deg, #5d8764 0%, #2f522a 100%); color: white; }
         .btn-primary:hover:not(:disabled) { transform: translateY(-2px); box-shadow: 0 5px 15px rgba(102, 126, 234, 0.4); }
         .btn-secondary { background: #6c757d; color: white; }
         .btn-success { background: linear-gradient(135deg, #28a745 0%, #20c997 100%); color: white; }
         .btn-danger { background: linear-gradient(135deg, #dc3545 0%, #fd7e14 100%); color: white; }
-        .main-content { padding: 30px; }
-        .deck-selector { background: #f8f9fa; border-radius: 12px; padding: 25px; margin-bottom: 30px; }
+        .main-content { padding: 30px; width: 100%; }
+        .deck-selector { background: #f8f9fa; padding: 5px; }
         .form-group { margin-bottom: 20px; }
         .form-group label { display: block; margin-bottom: 8px; font-weight: 600; color: #495057; }
         .form-control { width: 100%; padding: 12px; border: 1px solid #ddd; border-radius: 8px; font-size: 14px; }
@@ -520,7 +531,7 @@ class WebServer(BaseHTTPRequestHandler):
         @media (max-width: 768px) { .diff-split { grid-template-columns: 1fr; } .diff-header { text-align: center; } }
         .field-preview { background: white; border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin-top: 10px; }
         .field-preview h4 { color: #495057; font-size: 0.9rem; margin-bottom: 10px; }
-        .preview-content { font-family: Arial, sans-serif; font-size: 14px; line-height: 1.5; }
+        .preview-content { font-size: 14px; line-height: 1.5; color: white; background-color: #363636; padding: 10px; border-radius: 4px; }
         .field-tabs { border-bottom: 1px solid #ddd; display: flex; background: #f8f9fa; border-radius: 8px 8px 0 0; }
         .field-tab { padding: 8px 16px; cursor: pointer; border: none; background: none; color: #6c757d; font-size: 0.85rem; font-weight: 500; transition: all 0.3s ease; flex: 1; text-align: center; }
         .field-tab:first-child { border-radius: 8px 0 0 0; }
@@ -561,28 +572,39 @@ class WebServer(BaseHTTPRequestHandler):
 
         <div class="main-content">
             <div class="deck-selector" id="deckSelector">
-                <h3 style="margin-bottom: 20px;">Process Cards</h3>
-                <div style="display: grid; grid-template-columns: 2fr 1fr 1fr 1fr; gap: 15px; margin-bottom: 20px;">
+                <div style="display: grid; grid-template-columns: 1fr; gap: 15px;">
                     <div class="form-group">
                         <label for="deckSelect">Select Deck:</label>
                         <select id="deckSelect" class="form-control"></select>
                     </div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; border: 1px solid #ddd; border-radius: 12px; padding: 10px; margin-top: 15px; background-color: #deeffd;">
                     <div class="form-group">
                         <label for="batchSize">Batch Size:</label>
-                        <input type="number" id="batchSize" class="form-control" value="1" min="1" max="500">
+                        <input type="number" id="batchSize" class="form-control" value="10" min="1" max="500">
                     </div>
                     <div class="form-group">
                         <label for="startFrom">Start From:</label>
                         <input type="number" id="startFrom" class="form-control" value="0" min="0">
                     </div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; border: 1px solid #ddd; border-radius: 12px; padding: 10px; margin-top: 15px;     background-color: #f5edeb;">
+                    <div class="form-group">
+                        <label for="wordList">Word list (comma-separated):</label>
+                        <input type="text" id="wordList" class="form-control">
+                    </div>
+                    <div class="form-group">
+                        <label for="flaggedOnly">Flagged only:</label>
+                        <input type="checkbox" id="flaggedOnly">
+                    </div>
+                    <div style="display: flex; align-items: center;">
+                        <label><input type="checkbox" id="createBackup"> Create backup</label>
+                    </div>
+                </div>
+                <div style="display: grid; grid-template-columns: 1fr; gap: 15px; margin-top: 15px;">
                     <div class="form-group">
                         <label>&nbsp;</label>
                         <button class="btn btn-primary" onclick="processCards()" id="processBtn" style="width: 100%;">Fix Cards</button>
-                    </div>
-                </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px;">
-                    <div>
-                        <label><input type="checkbox" id="createBackup"> Create backup</label>
                     </div>
                 </div>
             </div>
@@ -622,6 +644,7 @@ class WebServer(BaseHTTPRequestHandler):
         document.addEventListener('DOMContentLoaded', function() {
             checkServerStatus();
             loadDecks();
+            window.addEventListener('beforeunload', handleBeforeUnload);
         });
 
         async function checkServerStatus() {
@@ -676,6 +699,8 @@ class WebServer(BaseHTTPRequestHandler):
             const batchSize = parseInt(document.getElementById('batchSize').value);
             const startFrom = parseInt(document.getElementById('startFrom').value);
             const createBackup = document.getElementById('createBackup').checked;
+            const wordList = document.getElementById('wordList').value.trim();
+            const flaggedOnly = document.getElementById('flaggedOnly').checked;
             
             if (!deckName) {
                 alert('Please select a deck');
@@ -696,7 +721,9 @@ class WebServer(BaseHTTPRequestHandler):
                         deck_name: deckName,
                         batch_size: batchSize,
                         start_from: startFrom,
-                        create_backup: createBackup
+                        create_backup: createBackup,
+                        word_list: wordList,
+                        flagged_only: flaggedOnly
                     }),
                     signal: controller.signal
                 });
@@ -754,7 +781,6 @@ class WebServer(BaseHTTPRequestHandler):
 
                 const result = await response.json();
                 hideProcessing();
-                
                 selectedCards.clear();
                 updateStats();
                 
@@ -893,7 +919,7 @@ class WebServer(BaseHTTPRequestHandler):
                     
                     // Generate HTML preview for Back field and reference links
                     let previewHtml = '';
-                    if (fieldName === 'Back' && newValue) {
+                    if (newValue) {
                         // Replace newlines with <br> for HTML preview
                         const previewValue = newValue.replace(/\\n/g, '<br>');
                         
@@ -921,11 +947,13 @@ class WebServer(BaseHTTPRequestHandler):
                                 </div>
                                 <div id="${tabId}-diff" class="tab-content active">
                                     <div class="field-content diff-container">${diffHtml}</div>
+                                    ${previewHtml}
                                 </div>
                                 <div id="${tabId}-updated" class="tab-content">
                                     <textarea class="field-input" 
                                              onchange="updateField(${cardIndex}, '${fieldName}', this.value)"
                                              oninput="updateFieldAndRefresh(${cardIndex}, '${fieldName}', this.value, '${tabId}')"
+                                             onkeydown="handleTextareaKeydown(event, ${cardIndex}, '${fieldName}', '${tabId}')"
                                              placeholder="Enter ${fieldName} content...">${escapeHtml(newValue)}</textarea>
                                     ${previewHtml}
                                 </div>
@@ -1030,11 +1058,45 @@ class WebServer(BaseHTTPRequestHandler):
             
             // Update HTML preview if this is the Back field
             if (fieldName === 'Back' && newValue) {
+                const previewValue = newValue.replace(/\\n/g, '<br>');
                 const previewContainer = document.querySelector(`#${tabId}-updated .preview-content`);
                 if (previewContainer) {
-                    const previewValue = newValue.replace(/\\n/g, '<br>');
                     previewContainer.innerHTML = previewValue;
                 }
+                const previewContainer2 = document.querySelector(`#${tabId}-diff .preview-content`);
+                if (previewContainer2) {
+                    previewContainer2.innerHTML = previewValue;
+                }
+            }
+        }
+
+        function handleTextareaKeydown(event, cardIndex, fieldName, tabId) {
+            if (!event.shiftKey && (event.ctrlKey || event.metaKey) && (event.key === 'i' || event.key === 'I')) {
+                const textarea = event.target;
+                const start = textarea.selectionStart;
+                const end = textarea.selectionEnd;
+                if (start == null || end == null) {
+                    return;
+                }
+                event.preventDefault();
+                if (start === end) {
+                    return; // do nothing if no selection
+                }
+                const value = textarea.value;
+                let before = value.slice(0, start);
+                let selected = value.slice(start, end);
+                let after = value.slice(end);
+                if (selected.endsWith(' ')) {
+                    selected = selected.slice(0, -1);
+                    after = ' ' + after;
+                    end++;
+                }
+                const wrapped = '<i>' + selected + '</i>';
+                textarea.value = before + wrapped + after;
+                //const newStart = start + 3; // position after <i>
+                //const newEnd = newStart + selected.length;
+                //textarea.setSelectionRange(newStart, newEnd);
+                updateFieldAndRefresh(cardIndex, fieldName, textarea.value, tabId);
             }
         }
 
@@ -1151,6 +1213,18 @@ class WebServer(BaseHTTPRequestHandler):
                 toggle.textContent = '▼ Show';
             }
         }
+
+        function handleBeforeUnload(e) {
+            if (hasUnsavedWork()) {
+                e.preventDefault();
+                // Most browsers ignore the custom message and show a generic prompt
+                e.returnValue = '';
+            }
+        }
+
+        function hasUnsavedWork() {
+            return (cardData.length > 0);
+        }
     </script>
 </body>
 </html>'''
@@ -1172,6 +1246,19 @@ def start_web_server(fixer, port: int = 8080):
     webbrowser.open(f'http://localhost:{port}')
     
     return server
+
+offline_updates = [
+    {'note': {'id': 1709631611485, 'fields': {'Front': 'En ättling', 'Back': 'En avkomling eller släkting i nedstigande led (descendant)<br>("Hon var <i>ättling</i> till den berömda författaren")<br><span style="color: #C2C2C2">syn: avkomling, efterkomling, descendant</span>'}, 'tags': ['reviewed']}},
+    {'note': {'id': 1710707690534, 'fields': {'Front': 'En kvint', 'Back': 'Det femte tonstegintervallet i en diatonisk skala<br>("En perfekt <i>kvint</i> är ett av de renaste intervallen")<br><span style="color: #C2C2C2">se även: prim, sekund, ters, kvart, sext, septima, oktav, nona</span>'}, 'tags': ['reviewed']}},
+    {'note': {'id': 1711263625320, 'fields': {'Front': 'Visserligen', 'Back': 'Medgivande uttryck som ofta följs av en invändning<br>("<i>Visserligen</i> är jag trött, men jag måste arbeta ändå")<br>("Att åtgärda den sortens problem är <i>visserligen</i> välbehövligt")<br><span style="color: #C2C2C2">syn: förvisso, säkert, onekligen, med visshet, förvisst, visst, för all del</span>'}, 'tags': ['reviewed']}},
+    {'note': {'id': 1711486599305, 'fields': {'Front': 'En slida (2)', 'Back': '1. Hölje för klingor eller vassa verktyg (en klinga: a blade)<br>2. (medicinsk) Vagina<br><span style="color: #C2C2C2">syn: skida, balja (för verktyg); vagina (medicinsk)</span>'}, 'tags': ['reviewed']}},
+    {'note': {'id': 1711486641520, 'fields': {'Front': 'En domare', 'Back': 'Person som dömer i domstol<br>("<i>Domaren</i> lyssnade uppmärksamt på vittnesmålen")<br><span style="color: #C2C2C2">syn: domshavande, rättsskipare</span>'}, 'tags': ['reviewed']}},
+    {'note': {'id': 1711486733900, 'fields': {'Front': 'En målsägare', 'Back': 'Person som för talan i ett brottmål (plaintiff)<br>("<i>Målsägaren</i> yrkade på skadestånd")<br><span style="color: #C2C2C2">se även: kärande (i civilmål)</span>'}, 'tags': ['reviewed']}},
+    {'note': {'id': 1711486797384, 'fields': {'Front': 'En åklagare', 'Back': 'Juridisk tjänsteman som driver åtal i brottmål (prosecutor)<br>("<i>Åklagaren</i> yrkade på fängelse i två år")<br><span style="color: #C2C2C2">syn: prosecutor, allmän åklagare</span>'}, 'tags': ['reviewed']}},
+    {'note': {'id': 1711486901435, 'fields': {'Front': 'En tilltalad', 'Back': 'Person som är anklagad för brott i en rättegång (defendant)<br>("<i>Den tilltalade</i> nekade till alla anklagelser")<br><span style="color: #C2C2C2">syn: svarande, anklagad, åtalad</span>'}, 'tags': ['reviewed']}},
+    {'note': {'id': 1712521153807, 'fields': {'Front': 'En mask (2)', 'Back': '1. Litet krälande djur utan extremiteter<br><span style="color: #C2C2C2">("En <i>mask</i> kröp fram ur jorden")</span><br>2. Förklädd identitet eller ansiktsbeklädnad<br><span style="color: #C2C2C2">syn: metmask, daggmask (för djuret); förklädnad (för maskering)</span>'}, 'tags': ['reviewed']}},
+    {'note': {'id': 1713208300494, 'fields': {'Front': 'Att fjärma', 'Back': '(refl) Att avlägsna eller distansera sig (alienate)<br>("Vi ville <i>fjärma</i> oss från det för vi gillade det inte")<br><span style="color: #C2C2C2">syn: avlägsna, alienera, distansera</span>'}, 'tags': ['reviewed']}}
+]
 
 def parse_arguments():
     """Parse command line arguments"""
@@ -1201,6 +1288,8 @@ Environment Variables:
     parser.add_argument('--web', action='store_true', help='Start web interface')
     parser.add_argument('--port', type=int, default=8080, help='Port for web interface (default: 8080)')
     parser.add_argument('--word_list', type=str, help='Existing words in the deck separated by commas to modify')
+    parser.add_argument('--parse_offline_updates', action='store_true', help='Parse offline updates')
+    parser.add_argument('--flagged_only', action='store_true', help='Only process cards with flag 1 set')
     
     return parser.parse_args()
 
@@ -1240,17 +1329,11 @@ class SwedishCardProcessor:
                 max_tokens=4000,
                 messages=[{"role": "user", "content": prompt}]
             )
-            print("Claude API call completed successfully")
-            
-            print("response content: ", len(response.content))
-            for i in range(len(response.content)):
-                print(f"content[{i}]: ", response.content[i])
             
             # Store raw response for debugging
             raw_claude_response = response.content[0].text
             
             # Process cards and potentially add audio
-            print("Parsing Claude response...")
             processed_cards = self._parse_claude_response(raw_claude_response, cards)
             print(f"Parsed {len(processed_cards)} cards from Claude response")
             
@@ -1277,11 +1360,11 @@ You are a language expert tasked with helping me build a Swedish flash card deck
 * An example sentence in quotations prefixed with "t.ex." should be simply be in parenthesis, without the prefix.
 * A list of different defintions separated by "or, " should be converted into a numbered list with each item on a new line.
 * When a word has several definitions indicate the total count in the front field, for example: "En skorpa (2)".
-* Synonyms (in parenthesis coming after "syn: ") and additional information (such as "se även: " or related words) should use #C2C2C2 as the text colour) and appear on a new line after the relevant definition.
+* Synonyms (in parenthesis coming after "syn: ") and additional information (such as "se även: " or related words) should use #C2C2C2 as the text colour, within a <span> tag) and appear on a new line after the relevant definition.
 * Less common usages should be indicated as such, coming last in the list of definitions after a "mindre vanliga: " line.
-* Any sound tag beginning with "[sound:hypertts" should be deleted. E.g. "En bena [sound:hypertts-0296ea3c66874a48741b48088e46c3e8163903cbb099573a6a04341c.mp3]" becomes just "En bena".
+* Any sound tag beginning with "[sound:hypertts" should be deleted. E.g. "En bena [sound:hypertts-0296ea3c66874a48741b48088e46c3e8163903cbb099573a6a04341c.mp3]" becomes just "En bena". Do not remove sound tags not containing "hypertts".
 * Fix the spelling for any misspelled words.
-* Example sentences should be wrapped in quotations, and normally each be on their own line. The word in question should be in italics (surrounded with <i></i> HTML tags). The sentence (or partial sentence) should be as long as it needs to to show the word's usage but not longer.
+* Example sentences should be wrapped in quotations, and normally each be on their own line. The word in question should be in italics (surrounded with <i></i> HTML tags, not markdown!). The sentence (or partial sentence) should be as long as it needs to to show the word's usage but not longer.
 * If a word is reflexive, indicate that with "(refl)" at the start of the line, after the number.
 * Very uncommon words that are unlikely to be seen or heard today can be marked with flag 7 ("sällsynt").
 
@@ -1289,6 +1372,8 @@ For each card you review go through each rule and apply a fix when relevant.
 
 ## General guidelines
 Always include a verb's relevant preposition (e.g. prata i telefon) and a nounn's article (e.g. en bil).
+
+If a card has an English front and Swedish back, keep it that way since it's intentional.
 
 Keep the cards short and concise, yet with sufficient detail to capture the precise meaning of a word or phrase. I want to be able to quickly review cards and only rely on the additional information when a card isn't sticking. The most essential information should come first and be most prominent.
 """
@@ -1305,7 +1390,7 @@ Return format example: (output nothing else)
   "processed_cards": [
     {{
       "note_id": 123,
-      "updated_fields": {{"Front": "En bil", "Back": "A car ..."}},
+      "updated_fields": {{"Front": "En bil", "Back": "A car ("Jag äger två röda <i>bilar</i> ...")..."}},
     }}
   ]
 }}
@@ -1485,23 +1570,15 @@ class AnkiDeckFixer:
                         
                         note_id = card['note_id']
                         updated_fields = card.get('updated_fields', {})
-                        model_change = card.get('model_change', card['note'].get('modelName'))
-                        
-                        print(f"Debug: note_id={note_id}, updated_fields={updated_fields}, model_change={model_change}")
                         
                         if updated_fields:
                             for field_name, new_value in updated_fields.items():
                                 new_value = new_value.replace('\n', '<br>')
                                 updated_fields[field_name] = new_value
-                                print(f"Debug: update={repr(new_value)} for field {field_name}")
-                            
-                            print(f"Debug: updated_fields={updated_fields}")
                             
                             prev_tags = self.anki.get_note_tags(note_id)
-                            print(f"prev tags: {type(prev_tags)}")
                             tags = prev_tags + ['reviewed']
-                            print(f"Tags: {tags}")
-                            self.anki.update_note(note_id, updated_fields, model_change, tags)
+                            self.anki.update_note(note_id, updated_fields, tags)
                             changes_applied += 1
                         
                     except Exception as e:
@@ -1520,9 +1597,9 @@ class AnkiDeckFixer:
         print(f"=== Processing Complete ===")
         print(f"Total cards processed: {processed_count}")
     
-    def process_cards_for_review(self, deck_name: str, batch_size: int = 10, start_from: int = 0) -> Dict[str, Any]:
+    def process_cards_for_review(self, deck_name: str, batch_size: int = 10, start_from: int = 0, word_list: Optional[str] = None, flagged_only: bool = False) -> Dict[str, Any]:
         """Process cards and return results for web interface review"""
-        
+
         # Verify deck exists
         deck_names = self.anki.get_deck_names()
         
@@ -1532,23 +1609,64 @@ class AnkiDeckFixer:
         # Create backup if enabled
         self.create_backup(deck_name)
         
-        # Get all non-reviewed cards in deck
-        card_ids = self.anki.get_cards_in_deck_without_tag(deck_name, "reviewed")
-        
-        if len(card_ids) == 0:
-            print("Found 0 cards to review")
-            return {
-                'deck_name': deck_name,
-                'batch_size': batch_size,
-                'start_from': start_from,
-                'processed_count': 0,
-                'processed_cards': [],
-                'full_log': ''
-            }
-        
-        # Sort cards to prioritize important ones
-        print(f"Sorting {len(card_ids)} cards by priority...")
-        card_ids = self._sort_cards_by_priority(card_ids)
+        # Build target card list
+        card_ids = []
+        if word_list:
+            # Use provided word list to filter cards (like --word_list)
+            words = [word.strip() for word in word_list.split(',') if word.strip()]
+            print(f"Filtering cards to only include words: {', '.join(words)}")
+            seen = set()
+            updated_word_count = 0
+            new_word_count = 0
+            for word in words:
+                search = f'front:*{word}*'
+                results = self.anki.get_cards_in_deck_with_search(deck_name, search)
+                if results:
+                    for cid in results:
+                        if cid not in seen:
+                            card_ids.append(cid)
+                            seen.add(cid)
+                            updated_word_count += 1
+                else:
+                    # Add all non-existing words as new cards
+                    # Capitalize the first letter if it's a noun
+                    word = word[0].upper() + word[1:]
+                    new_note_id = self.anki.add_note(
+                        deck_name,
+                        'Basic (with audio)',
+                        {
+                            'Front': word,
+                            'Back': '',
+                            'Audio': ''
+                        },
+                        [])
+                    if new_note_id:
+                        card_ids.append(new_note_id)
+                        seen.add(new_note_id)
+                        new_word_count += 1
+            
+            print(f"Found {updated_word_count} existing words, added {new_word_count} new words, total {len(card_ids)} cards to review")
+        else:
+            # Get all non-reviewed cards in deck
+            search = '-tag:reviewed'
+            if flagged_only:
+                search += ' flag:1'
+            card_ids = self.anki.get_cards_in_deck_with_search(deck_name, search)
+            
+            if len(card_ids) == 0:
+                print("Found 0 cards to review")
+                return {
+                    'deck_name': deck_name,
+                    'batch_size': batch_size,
+                    'start_from': start_from,
+                    'processed_count': 0,
+                    'processed_cards': [],
+                    'full_log': ''
+                }
+            
+            # Sort cards to prioritize important ones
+            print(f"Sorting {len(card_ids)} cards by priority...")
+            card_ids = self._sort_cards_by_priority(card_ids)
         
         if start_from > 0:
             card_ids = card_ids[start_from:]
@@ -1559,11 +1677,30 @@ class AnkiDeckFixer:
             card_ids = card_ids[:batch_size]
             print(f"Batch size: {batch_size}, processing {len(card_ids)} cards")
         
+        # If after filtering there are no cards, return empty
+        if not card_ids:
+            print("Found 0 cards to process after filtering")
+            return {
+                'deck_name': deck_name,
+                'batch_size': batch_size,
+                'start_from': start_from,
+                'processed_count': 0,
+                'processed_cards': [],
+                'full_log': ''
+            }
+        
         # Get card info
         cards_info = self.anki.get_card_info(card_ids)
         
         # Get unique note IDs and their info
-        note_ids = list(set([card['note'] for card in cards_info]))
+        # note_ids = list(set([card['note'] for card in cards_info]))
+        note_ids = set()
+        for card in cards_info:
+            if card.get('note') is not None:
+                note_ids.add(card['note'])
+            else:
+                print(f"Card doesn't contain note property, skipping: {card}")
+        note_ids = list(note_ids)
         notes_info = self.anki.get_note_info(note_ids)
         
         # Combine card and note info
@@ -1624,15 +1761,16 @@ class AnkiDeckFixer:
             try:
                 note_id = card['note_id']
                 updated_fields = card.get('updated_fields', {})
-                model_change = card.get('model_change')
                 
                 if updated_fields:
                     for field_name, new_value in updated_fields.items():
                         new_value = new_value.replace('\n', '<br>')
                         updated_fields[field_name] = new_value
                     
+                    # TODO: Add forvo audio & change note type when needed
+
                     tags = self.anki.get_note_tags(note_id) + ['reviewed']
-                    self.anki.update_note(note_id, updated_fields, model_change, tags)
+                    self.anki.update_note(note_id, updated_fields, tags)
                     results['applied_count'] += 1
             
             except Exception as e:
@@ -1645,8 +1783,6 @@ class AnkiDeckFixer:
         if not card_ids:
             return card_ids
         
-        print(f"Getting detailed info for {len(card_ids)} cards to sort...")
-        
         # Get card info including stats
         cards_info = self.anki.get_card_info(card_ids)
         
@@ -1658,16 +1794,12 @@ class AnkiDeckFixer:
         # Create sorting data
         card_sort_data = []
         for card in cards_info:
-            note_id = card['note']
-            note = notes_dict.get(note_id, {})
 
+            # note_id = card['note']
+            # note = notes_dict.get(note_id, {})
             has_flag_1 = False
-            
-            if note.get('flags') is not None:
-                # Check if note has flag 1 ("behöver utvidgas")
-                print("Flags:", note.get('flags'))
-                has_flag_1 = note.get('flags') == 1
-            
+            # TODO: Get flags
+
             # Get review count (reps field)
             review_count = card.get('reps', 0)
             
@@ -1716,6 +1848,9 @@ def main():
     # Parse command line arguments
     args = parse_arguments()
     
+    if args.word_list and args.flagged_only:
+        print("Warning: --word_list and --flagged_only are mutually exclusive, --flagged_only will be ignored")
+
     # Check for Claude API key
     claude_api_key = os.getenv('ANTHROPIC_API_KEY')
     if not claude_api_key:
@@ -1833,6 +1968,11 @@ def main():
         
         card_ids = []
         
+        if args.parse_offline_updates:
+            for update in offline_updates:
+                fixer.anki.request("updateNote", **update)
+            return
+
         if args.word_list:
             # Use provided word list to filter cards
             existing_words = [word.strip() for word in args.word_list.split(',') if word.strip()]
@@ -1846,7 +1986,10 @@ def main():
             print(f"Found {len(card_ids)} matching cards in deck '{deck_name}'")
         else:
             # Get all cards in deck
-            card_ids : List[int] = fixer.anki.get_cards_in_deck_without_tag(deck_name, "reviewed")
+            search = '-tag:reviewed'
+            if args.flagged_only:
+                search += ' flag:1'
+            card_ids : List[int] = fixer.anki.get_cards_in_deck_with_search(deck_name, search)
             print(f"Found {len(card_ids)} cards in deck '{deck_name}'")
         
             # Sort cards to prioritize important ones
