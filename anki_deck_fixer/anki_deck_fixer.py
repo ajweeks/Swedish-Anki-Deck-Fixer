@@ -30,69 +30,61 @@ import argparse
 from http.server import HTTPServer, BaseHTTPRequestHandler
 import threading
 import webbrowser
-from urllib.parse import urlparse, parse_qs
+from urllib.parse import urlparse
 import traceback
+
 
 class AnkiConnector:
     """Handles communication with Anki through AnkiConnect"""
-    
+
     def __init__(self, url="http://localhost:8765"):
         self.url = url
-        
+
     def request(self, action: str, **params):
         """Send request to AnkiConnect"""
-        payload = {
-            "action": action,
-            "version": 6,
-            "params": params
-        }
-        
+        payload = {"action": action, "version": 6, "params": params}
+
         try:
-            response : requests.Response = requests.post(self.url, json=payload)
+            response: requests.Response = requests.post(self.url, json=payload)
             response.raise_for_status()
             result = response.json()
-            
+
             if result.get("error"):
                 raise Exception(f"AnkiConnect error: {result['error']}")
-            
+
             r = result.get("result")
             return r
         except requests.exceptions.ConnectionError:
-            raise Exception("Cannot connect to Anki. Make sure Anki is running with AnkiConnect add-on installed.")
-    
+            raise Exception(
+                "Cannot connect to Anki. Make sure Anki is running with AnkiConnect add-on installed."
+            )
+
     def get_deck_names(self) -> Dict:
         """Get all deck names"""
         return self.request("deckNames")
-    
+
     def get_cards_in_deck(self, deck_name: str) -> Dict:
         """Get all card IDs in a deck"""
-        return self.request("findCards", query=f"deck:\"{deck_name}\"")
-    
+        return self.request("findCards", query=f'deck:"{deck_name}"')
+
     def get_cards_in_deck_with_search(self, deck_name: str, search: str) -> Dict:
         """Get all card IDs in a deck"""
-        return self.request("findCards", query=f"deck:\"{deck_name}\" {search}")
-    
+        return self.request("findCards", query=f'deck:"{deck_name}" {search}')
+
     def get_card_info(self, card_ids: List[int]) -> Dict:
         """Get card information"""
         return self.request("cardsInfo", cards=card_ids)
-    
+
     def get_note_tags(self, note_id: int) -> Dict:
         """Get note tags"""
-        params = {
-            "note": note_id
-        }
+        params = {"note": note_id}
         return self.request("getNoteTags", **params)
-    
+
     def update_note_tags(self, note_id: int, tags: List[str]) -> Dict:
         """Update note tags"""
-        params = {
-            "note": {
-                "id": note_id,
-                "tags": tags
-            }
-        }
+        params = {"note": {"id": note_id, "tags": tags}}
         return self.request("updateNoteTags", **params)
-    
+
     def remove_note_tag(self, note_id: int, tag_to_remove: str):
         """Remove specific tag from a note"""
         current_tags = self.get_note_tags(note_id)
@@ -100,33 +92,28 @@ class AnkiConnector:
         updated_tags = [tag for tag in current_tags if tag != tag_to_remove]
         print("Updated tags:", updated_tags)
         self.update_note_tags(note_id, updated_tags)
-    
-    def update_note(self, note_id: int, fields: Dict[str, str], tags: List[str]) -> Dict:
+
+    def update_note(
+        self, note_id: int, fields: Dict[str, str], tags: List[str]
+    ) -> Dict:
         """Update note fields"""
-        params = {
-            "note": {
-                "id": note_id,
-                "fields": fields,
-                "tags": tags
-            }
-        }
+        params = {"note": {"id": note_id, "fields": fields, "tags": tags}}
         print("updateNote: ", params)
         return self.request("updateNote", **params)
-    
-    def update_note_fields(self, note_id: int, fields: Dict[str, str], model_name: Optional[str] = None) -> Dict:
+
+    def update_note_fields(
+        self, note_id: int, fields: Dict[str, str], model_name: Optional[str] = None
+    ) -> Dict:
         """Update note fields"""
-        params = {
-            "note": {
-                "id": note_id,
-                "fields": fields
-            }
-        }
+        params = {"note": {"id": note_id, "fields": fields}}
         if model_name:
             params["note"]["modelName"] = model_name
-            
+
         return self.request("updateNoteFields", **params)
-    
-    def add_note(self, deck_name: str, model_name: str, fields: Dict[str, str], tags: List[str]) -> Dict:
+
+    def add_note(
+        self, deck_name: str, model_name: str, fields: Dict[str, str], tags: List[str]
+    ) -> Dict:
         """Add a new note"""
         params = {
             "note": {
@@ -140,137 +127,146 @@ class AnkiConnector:
             }
         }
         return self.request("addNote", **params)
-    
+
     def create_deck(self, deck_name: str) -> Dict:
         """Create a new deck"""
         return self.request("createDeck", deck=deck_name)
-    
+
     def export_deck(self, deck_name: str, path: str) -> Dict:
         """Export deck to file"""
         # Ensure the path is absolute and in current directory
         if not os.path.isabs(path):
             path = os.path.abspath(path)
-        return self.request("exportPackage", deck=deck_name, path=path, includeSched=False)
-    
+        return self.request(
+            "exportPackage", deck=deck_name, path=path, includeSched=False
+        )
+
     def get_note_info(self, note_ids: List[int]) -> Dict:
         """Get note information"""
         return self.request("notesInfo", notes=note_ids)
-    
+
     def store_media_file(self, filename: str, data: bytes) -> bool:
         """Store media file in Anki's media collection"""
         try:
             import base64
-            encoded_data = base64.b64encode(data).decode('utf-8')
-            
-            result = self.request("storeMediaFile", 
-                                filename=filename, 
-                                data=encoded_data)
+
+            encoded_data = base64.b64encode(data).decode("utf-8")
+
+            result = self.request(
+                "storeMediaFile", filename=filename, data=encoded_data
+            )
             return result is not None
         except Exception as e:
             print(f"Error storing media file {filename}: {e}")
             return False
 
+
 class ForvoAPI:
     """Handles Forvo API requests for Swedish pronunciation audio"""
-    
+
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key
         self.base_url = "https://apifree.forvo.com"
         self.session = requests.Session()
-        
+
     def search_pronunciations(self, word: str, language: str = "sv") -> List[Dict]:
         """Search for pronunciations of a word"""
         if not self.api_key:
             return []
-            
+
         url = f"{self.base_url}/key/{self.api_key}/format/json/action/word-pronunciations/word/{word}/language/{language}"
-        
+
         try:
             response = self.session.get(url, timeout=10)
             response.raise_for_status()
             data = response.json()
-            
-            if data.get('attributes', {}).get('total', 0) == 0:
+
+            if data.get("attributes", {}).get("total", 0) == 0:
                 return []
-                
-            pronunciations = data.get('items', [])
+
+            pronunciations = data.get("items", [])
             # Sort by votes (most voted first)
-            pronunciations.sort(key=lambda x: x.get('votes', 0), reverse=True)
-            
+            pronunciations.sort(key=lambda x: x.get("votes", 0), reverse=True)
+
             return pronunciations[:3]  # Return top 3
-            
+
         except Exception as e:
             print(f"Forvo API error for '{word}': {e}")
             return []
-    
+
     def download_pronunciation(self, word: str) -> Optional[Dict[str, Any]]:
         """Download the best pronunciation for a word"""
         pronunciations = self.search_pronunciations(word)
-        
+
         if not pronunciations:
             return None
-            
+
         best = pronunciations[0]
-        audio_url = best.get('pathmp3')
-        
+        audio_url = best.get("pathmp3")
+
         if not audio_url:
             return None
-            
+
         try:
             # Download the audio file
             response = self.session.get(audio_url, timeout=30)
             response.raise_for_status()
-            
+
             # Generate filename
             filename = f"{word}_forvo_{best.get('id', 'unknown')}.mp3"
             # Clean filename for Anki
-            filename = re.sub(r'[^\w\-_\.]', '_', filename)
-            
+            filename = re.sub(r"[^\w\-_\.]", "_", filename)
+
             return {
-                'filename': filename,
-                'data': response.content,
-                'word': word,
-                'votes': best.get('votes', 0),
-                'username': best.get('username', 'unknown')
+                "filename": filename,
+                "data": response.content,
+                "word": word,
+                "votes": best.get("votes", 0),
+                "username": best.get("username", "unknown"),
             }
-            
+
         except Exception as e:
             print(f"Error downloading audio for '{word}': {e}")
             return None
 
+
 class DiffFormatter:
     """Formats text differences with colors"""
-    
+
     @staticmethod
     def format_diff(old_text: str, new_text: str) -> str:
         """Format differences between old and new text with colors"""
         if old_text == new_text:
             return f"No changes: {old_text}"
-        
+
         # Use difflib to get differences
         differ = difflib.unified_diff(
             old_text.splitlines(keepends=True),
             new_text.splitlines(keepends=True),
-            fromfile='old',
-            tofile='new',
-            n=0
+            fromfile="old",
+            tofile="new",
+            n=0,
         )
-        
+
         result = []
         for line in differ:
-            if line.startswith('---') or line.startswith('+++') or line.startswith('@@'):
+            if (
+                line.startswith("---")
+                or line.startswith("+++")
+                or line.startswith("@@")
+            ):
                 continue
-            elif line.startswith('-'):
+            elif line.startswith("-"):
                 # Removed text in red
                 result.append(f"\033[91m{line[1:].rstrip()}\033[0m")
-            elif line.startswith('+'):
-                # Added text in green  
+            elif line.startswith("+"):
+                # Added text in green
                 result.append(f"\033[92m{line[1:].rstrip()}\033[0m")
             else:
                 result.append(line.rstrip())
-        
-        return '\n'.join(result) if result else f"Changed from: {old_text} → {new_text}"
-    
+
+        return "\n".join(result) if result else f"Changed from: {old_text} → {new_text}"
+
     @staticmethod
     def print_field_changes(field_name: str, old_value: str, new_value: str):
         """Print field changes with formatting"""
@@ -278,22 +274,23 @@ class DiffFormatter:
             print(f"\n  {field_name}:")
             print(f"    {DiffFormatter.format_diff(old_value, new_value)}")
 
+
 class WebServer(BaseHTTPRequestHandler):
     """HTTP server to handle web interface requests"""
-    
+
     fixer = None
-    
+
     def do_GET(self):
         """Handle GET requests"""
         parsed_url = urlparse(self.path)
         path = parsed_url.path
-        
+
         try:
-            if path == '/' or path == '/index.html':
+            if path == "/" or path == "/index.html":
                 self.serve_interface()
-            elif path == '/api/decks':
+            elif path == "/api/decks":
                 self.serve_decks()
-            elif path == '/api/status':
+            elif path == "/api/status":
                 self.serve_status()
             else:
                 self.send_error(404)
@@ -301,20 +298,20 @@ class WebServer(BaseHTTPRequestHandler):
             print(f"Error handling GET {path}: {e}")
             traceback.print_exc()
             self.send_error(500, str(e))
-    
+
     def do_POST(self):
         """Handle POST requests"""
         parsed_url = urlparse(self.path)
         path = parsed_url.path
-        
+
         try:
-            content_length = int(self.headers.get('Content-Length', 0))
-            post_data = self.rfile.read(content_length).decode('utf-8')
+            content_length = int(self.headers.get("Content-Length", 0))
+            post_data = self.rfile.read(content_length).decode("utf-8")
             data = json.loads(post_data) if post_data else {}
-            
-            if path == '/api/process':
+
+            if path == "/api/process":
                 self.handle_process_request(data)
-            elif path == '/api/apply':
+            elif path == "/api/apply":
                 self.handle_apply_request(data)
             else:
                 self.send_error(404)
@@ -322,149 +319,156 @@ class WebServer(BaseHTTPRequestHandler):
             print(f"Error handling POST {path}: {e}")
             traceback.print_exc()
             self.send_error(500, str(e))
-    
+
     def serve_interface(self):
         """Serve the main HTML interface"""
         # Read the HTML content from the artifact or inline it
         html_content = self.get_interface_html()
-        
+
         self.send_response(200)
-        self.send_header('Content-type', 'text/html; charset=utf-8')
-        self.send_header('Content-Length', str(len(html_content.encode('utf-8'))))
-        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
+        self.send_header("Content-type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(html_content.encode("utf-8"))))
+        self.send_header("Cache-Control", "no-cache, no-store, must-revalidate")
         self.end_headers()
-        self.wfile.write(html_content.encode('utf-8'))
-    
+        self.wfile.write(html_content.encode("utf-8"))
+
     def serve_decks(self):
         """Serve list of available decks"""
         try:
             if not self.fixer:
                 print("Error: Fixer not initialized")
                 raise Exception("Fixer not initialized")
-            
+
             decks = self.fixer.anki.get_deck_names()
-            response = {'decks': decks}
+            response = {"decks": decks}
             self.send_json_response(response)
         except Exception as e:
             print(f"Error getting decks: {e}")
             self.send_error(500, str(e))
-            
 
     def serve_status(self):
         """Serve server status"""
         response = {
-            'status': 'running',
-            'claude_api': bool(os.getenv('ANTHROPIC_API_KEY')),
-            'forvo_api': bool(os.getenv('FORVO_API_KEY')),
-            'anki_connected': False
+            "status": "running",
+            "claude_api": bool(os.getenv("ANTHROPIC_API_KEY")),
+            "forvo_api": bool(os.getenv("FORVO_API_KEY")),
+            "anki_connected": False,
         }
-        
+
         # Test Anki connection
         try:
             if self.fixer:
-                deck_names = self.fixer.anki.get_deck_names()
-                response['anki_connected'] = True
+                self.fixer.anki.get_deck_names()
+                response["anki_connected"] = True
             else:
                 print("No fixer instance available")
         except Exception as e:
             print(f"Anki connection failed: {e}")
-        
+
         self.send_json_response(response)
-    
+
     def handle_process_request(self, data):
         """Handle card processing request"""
         try:
-            deck_name = data.get('deck_name')
-            batch_size = data.get('batch_size', 10)
-            start_from = data.get('start_from', 0)
-            create_backup = data.get('create_backup', True)
-            word_list = data.get('word_list')
-            flagged_only = data.get('flagged_only')
-            
+            deck_name = data.get("deck_name")
+            batch_size = data.get("batch_size", 10)
+            start_from = data.get("start_from", 0)
+            create_backup = data.get("create_backup", True)
+            word_list = data.get("word_list")
+            flagged_only = data.get("flagged_only")
+
             if not deck_name:
                 raise Exception("deck_name is required")
-            
+
             if not self.fixer:
                 raise Exception("Fixer not initialized")
-            
+
             # Update the fixer's backup setting for this request
             original_backup_setting = self.fixer.should_create_backup
             self.fixer.should_create_backup = create_backup
-            
+
             try:
                 if word_list:
-                    batch_size = len(word_list)  # Process all words in one go if word_list is provided
+                    batch_size = len(
+                        word_list
+                    )  # Process all words in one go if word_list is provided
                     start_from = 0
-                results = self.fixer.process_cards_for_review(deck_name, batch_size, start_from, word_list, flagged_only)
-                
+                results = self.fixer.process_cards_for_review(
+                    deck_name, batch_size, start_from, word_list, flagged_only
+                )
+
                 self.send_json_response(results)
             finally:
                 # Restore original backup setting
                 self.fixer.should_create_backup = original_backup_setting
-            
+
         except Exception as e:
             print(f"Error in handle_process_request: {e}")
             traceback.print_exc()
             self.send_error(500, str(e))
-    
+
     def handle_apply_request(self, data):
         """Handle apply changes request"""
         try:
             if not self.fixer:
                 raise Exception("Fixer not initialized")
-            
+
             results = self.fixer.apply_selected_changes(data)
             self.send_json_response(results)
-            
+
         except Exception as e:
             self.send_error(500, str(e))
-    
+
     def send_json_response(self, data):
         """Send JSON response"""
         try:
             response_data = json.dumps(data, ensure_ascii=False, indent=2)
-            
+
             self.send_response(200)
-            self.send_header('Content-type', 'application/json; charset=utf-8')
-            self.send_header('Access-Control-Allow-Origin', '*')
-            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-            self.send_header('Access-Control-Allow-Headers', 'Content-Type')
-            response_bytes = response_data.encode('utf-8')
-            self.send_header('Content-Length', str(len(response_bytes)))
+            self.send_header("Content-type", "application/json; charset=utf-8")
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+            self.send_header("Access-Control-Allow-Headers", "Content-Type")
+            response_bytes = response_data.encode("utf-8")
+            self.send_header("Content-Length", str(len(response_bytes)))
             self.end_headers()
             self.wfile.write(response_bytes)
-            
+
         except Exception as e:
             print(f"Error serializing JSON response: {e}")
             print(f"Data type: {type(data)}")
             print(f"Data preview: {str(data)[:500]}")
             traceback.print_exc()
-            
+
             # Send error response
-            error_response = json.dumps({"error": f"JSON serialization failed: {str(e)}"})
+            error_response = json.dumps(
+                {"error": f"JSON serialization failed: {str(e)}"}
+            )
             self.send_response(500)
-            self.send_header('Content-type', 'application/json; charset=utf-8')
-            self.send_header('Content-Length', str(len(error_response)))
+            self.send_header("Content-type", "application/json; charset=utf-8")
+            self.send_header("Content-Length", str(len(error_response)))
             self.end_headers()
-            self.wfile.write(error_response.encode('utf-8'))
-    
+            self.wfile.write(error_response.encode("utf-8"))
+
     def do_OPTIONS(self):
         """Handle CORS preflight requests"""
         self.send_response(200)
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
-        self.send_header('Access-Control-Allow-Headers', 'Content-Type')
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
         self.end_headers()
-    
+
     def log_message(self, format, *args):
         """Override to reduce log noise"""
-        if not self.path.startswith('/api/'):
+        if not self.path.startswith("/api/"):
             return
-        print(f"[{datetime.now().strftime('%H:%M:%S')}] {self.command} {self.path} - {format % args}")
-    
+        print(
+            f"[{datetime.now().strftime('%H:%M:%S')}] {self.command} {self.path} - {format % args}"
+        )
+
     def get_interface_html(self):
         """Get the HTML interface content"""
-        return '''<!DOCTYPE html>
+        return """<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
@@ -1227,38 +1231,51 @@ class WebServer(BaseHTTPRequestHandler):
         }
     </script>
 </body>
-</html>'''
+</html>"""
+
 
 def start_web_server(fixer, port: int = 8080):
     """Start the web server"""
     WebServer.fixer = fixer
-    
-    server = HTTPServer(('localhost', port), WebServer)
-    
+
+    server = HTTPServer(("localhost", port), WebServer)
+
     print(f"🚀 Starting web server on http://localhost:{port}")
     print("🌐 Opening browser...")
-    
+
     # Start server in a separate thread
     server_thread = threading.Thread(target=server.serve_forever, daemon=True)
     server_thread.start()
-    
+
     # Open browser
-    webbrowser.open(f'http://localhost:{port}')
-    
+    webbrowser.open(f"http://localhost:{port}")
+
     return server
 
+
 offline_updates = [
-    {'note': {'id': 1709631611485, 'fields': {'Front': 'En ättling', 'Back': 'En avkomling eller släkting i nedstigande led (descendant)<br>("Hon var <i>ättling</i> till den berömda författaren")<br><span style="color: #C2C2C2">syn: avkomling, efterkomling, descendant</span>'}, 'tags': ['reviewed']}},
-    {'note': {'id': 1710707690534, 'fields': {'Front': 'En kvint', 'Back': 'Det femte tonstegintervallet i en diatonisk skala<br>("En perfekt <i>kvint</i> är ett av de renaste intervallen")<br><span style="color: #C2C2C2">se även: prim, sekund, ters, kvart, sext, septima, oktav, nona</span>'}, 'tags': ['reviewed']}},
-    {'note': {'id': 1711263625320, 'fields': {'Front': 'Visserligen', 'Back': 'Medgivande uttryck som ofta följs av en invändning<br>("<i>Visserligen</i> är jag trött, men jag måste arbeta ändå")<br>("Att åtgärda den sortens problem är <i>visserligen</i> välbehövligt")<br><span style="color: #C2C2C2">syn: förvisso, säkert, onekligen, med visshet, förvisst, visst, för all del</span>'}, 'tags': ['reviewed']}},
-    {'note': {'id': 1711486599305, 'fields': {'Front': 'En slida (2)', 'Back': '1. Hölje för klingor eller vassa verktyg (en klinga: a blade)<br>2. (medicinsk) Vagina<br><span style="color: #C2C2C2">syn: skida, balja (för verktyg); vagina (medicinsk)</span>'}, 'tags': ['reviewed']}},
-    {'note': {'id': 1711486641520, 'fields': {'Front': 'En domare', 'Back': 'Person som dömer i domstol<br>("<i>Domaren</i> lyssnade uppmärksamt på vittnesmålen")<br><span style="color: #C2C2C2">syn: domshavande, rättsskipare</span>'}, 'tags': ['reviewed']}},
-    {'note': {'id': 1711486733900, 'fields': {'Front': 'En målsägare', 'Back': 'Person som för talan i ett brottmål (plaintiff)<br>("<i>Målsägaren</i> yrkade på skadestånd")<br><span style="color: #C2C2C2">se även: kärande (i civilmål)</span>'}, 'tags': ['reviewed']}},
-    {'note': {'id': 1711486797384, 'fields': {'Front': 'En åklagare', 'Back': 'Juridisk tjänsteman som driver åtal i brottmål (prosecutor)<br>("<i>Åklagaren</i> yrkade på fängelse i två år")<br><span style="color: #C2C2C2">syn: prosecutor, allmän åklagare</span>'}, 'tags': ['reviewed']}},
-    {'note': {'id': 1711486901435, 'fields': {'Front': 'En tilltalad', 'Back': 'Person som är anklagad för brott i en rättegång (defendant)<br>("<i>Den tilltalade</i> nekade till alla anklagelser")<br><span style="color: #C2C2C2">syn: svarande, anklagad, åtalad</span>'}, 'tags': ['reviewed']}},
-    {'note': {'id': 1712521153807, 'fields': {'Front': 'En mask (2)', 'Back': '1. Litet krälande djur utan extremiteter<br><span style="color: #C2C2C2">("En <i>mask</i> kröp fram ur jorden")</span><br>2. Förklädd identitet eller ansiktsbeklädnad<br><span style="color: #C2C2C2">syn: metmask, daggmask (för djuret); förklädnad (för maskering)</span>'}, 'tags': ['reviewed']}},
-    {'note': {'id': 1713208300494, 'fields': {'Front': 'Att fjärma', 'Back': '(refl) Att avlägsna eller distansera sig (alienate)<br>("Vi ville <i>fjärma</i> oss från det för vi gillade det inte")<br><span style="color: #C2C2C2">syn: avlägsna, alienera, distansera</span>'}, 'tags': ['reviewed']}}
+    {
+        "note": {
+            "id": 1709631611485,
+            "fields": {
+                "Front": "En ättling",
+                "Back": 'En avkomling eller släkting i nedstigande led (descendant)<br>("Hon var <i>ättling</i> till den berömda författaren")<br><span style="color: #C2C2C2">syn: avkomling, efterkomling, descendant</span>',
+            },
+            "tags": ["reviewed"],
+        }
+    },
+    {
+        "note": {
+            "id": 1710707690534,
+            "fields": {
+                "Front": "En kvint",
+                "Back": 'Det femte tonstegintervallet i en diatonisk skala<br>("En perfekt <i>kvint</i> är ett av de renaste intervallen")<br><span style="color: #C2C2C2">se även: prim, sekund, ters, kvart, sext, septima, oktav, nona</span>',
+            },
+            "tags": ["reviewed"],
+        }
+    }
 ]
+
 
 def parse_arguments():
     """Parse command line arguments"""
@@ -1277,80 +1294,114 @@ Examples:
 Environment Variables:
   ANTHROPIC_API_KEY   Required: Your Claude API key
   FORVO_API_KEY       Optional: Your Forvo API key for audio
-        """
+        """,
     )
-    
-    parser.add_argument('--deck', type=str, help='Deck name to process')
-    parser.add_argument('--batch-size', type=int, default=10, help='Number of cards to process in each batch (default: 10)')
-    parser.add_argument('--start-from', type=int, default=0, help='Card number to start from (1-based, default: 0)')
-    parser.add_argument('--no-backup', action='store_true', help='Skip creating backup (not recommended)')
-    parser.add_argument('--list-decks', action='store_true', help='List available decks and exit')
-    parser.add_argument('--web', action='store_true', help='Start web interface')
-    parser.add_argument('--port', type=int, default=8080, help='Port for web interface (default: 8080)')
-    parser.add_argument('--word_list', type=str, help='Existing words in the deck separated by commas to modify')
-    parser.add_argument('--parse_offline_updates', action='store_true', help='Parse offline updates')
-    parser.add_argument('--flagged_only', action='store_true', help='Only process cards with flag 1 set')
-    
+
+    parser.add_argument("--deck", type=str, help="Deck name to process")
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=10,
+        help="Number of cards to process in each batch (default: 10)",
+    )
+    parser.add_argument(
+        "--start-from",
+        type=int,
+        default=0,
+        help="Card number to start from (1-based, default: 0)",
+    )
+    parser.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Skip creating backup (not recommended)",
+    )
+    parser.add_argument(
+        "--list-decks", action="store_true", help="List available decks and exit"
+    )
+    parser.add_argument("--web", action="store_true", help="Start web interface")
+    parser.add_argument(
+        "--port", type=int, default=8080, help="Port for web interface (default: 8080)"
+    )
+    parser.add_argument(
+        "--word_list",
+        type=str,
+        help="Existing words in the deck separated by commas to modify",
+    )
+    parser.add_argument(
+        "--parse_offline_updates", action="store_true", help="Parse offline updates"
+    )
+    parser.add_argument(
+        "--flagged_only", action="store_true", help="Only process cards with flag 1 set"
+    )
+
     return parser.parse_args()
+
 
 class SwedishCardProcessor:
     """Processes Swedish flashcards using Claude API"""
-    
-    def __init__(self, api_key: str, forvo_api_key: Optional[str] = None, anki_connector: Optional[AnkiConnector] = None):
+
+    def __init__(
+        self,
+        api_key: str,
+        forvo_api_key: Optional[str] = None,
+        anki_connector: Optional[AnkiConnector] = None,
+    ):
         self.client = anthropic.Anthropic(api_key=api_key)
         self.forvo = ForvoAPI(forvo_api_key)
         self.anki = anki_connector
-        
+
     def process_card_batch(self, cards: List[Dict]) -> tuple[List[Dict], str]:
         """Process a batch of cards using Claude"""
-        
+
         # Prepare card data for Claude
         card_data = []
         for card in cards:
-            note = card.get('note', {})
-            fields = note.get('fields', {})
-            
+            note = card.get("note", {})
+            fields = note.get("fields", {})
+
             card_info = {
-                'note_id': note.get('noteId'),
-                'model_name': note.get('modelName'),
-                'fields': fields,
-                'tags': note.get('tags', [])
+                "note_id": note.get("noteId"),
+                "model_name": note.get("modelName"),
+                "fields": fields,
+                "tags": note.get("tags", []),
             }
             card_data.append(card_info)
-        
+
         # Create prompt for Claude
         prompt = self._create_processing_prompt(card_data)
-        print(f"Prompt created, length: {len(prompt)} characters for {len(cards)} cards")
-        
+        print(
+            f"Prompt created, length: {len(prompt)} characters for {len(cards)} cards"
+        )
+
         try:
             print("Calling Claude API...")
             response = self.client.messages.create(
                 model="claude-3-5-sonnet-20241022",
                 max_tokens=4000,
-                messages=[{"role": "user", "content": prompt}]
+                messages=[{"role": "user", "content": prompt}],
             )
-            
+
             # Store raw response for debugging
             raw_claude_response = response.content[0].text
-            
+
             # Process cards and potentially add audio
             processed_cards = self._parse_claude_response(raw_claude_response, cards)
             print(f"Parsed {len(processed_cards)} cards from Claude response")
-            
+
             # Add Forvo audio where appropriate
             for card in processed_cards:
                 self._add_forvo_audio(card)
-            
+
             return processed_cards, raw_claude_response
-            
+
         except Exception as e:
             print(f"Error processing batch with Claude: {e}")
             traceback.print_exc()
             return [], ""
-    
+
     def _create_processing_prompt(self, card_data: List[Dict]) -> str:
         """Create the prompt for Claude to process cards"""
-        
+
         rules = """
 ## Rules
 
@@ -1377,7 +1428,7 @@ If a card has an English front and Swedish back, keep it that way since it's int
 
 Keep the cards short and concise, yet with sufficient detail to capture the precise meaning of a word or phrase. I want to be able to quickly review cards and only rely on the additional information when a card isn't sticking. The most essential information should come first and be most prominent.
 """
-        
+
         prompt = f"""{rules}
 
 Please process the following cards and return only the results strictly in JSON format, with no further comments.
@@ -1396,25 +1447,27 @@ Return format example: (output nothing else)
 }}
 """
         return prompt
-    
-    def _parse_claude_response(self, response_text: str, original_cards: List[Dict]) -> List[Dict]:
+
+    def _parse_claude_response(
+        self, response_text: str, original_cards: List[Dict]
+    ) -> List[Dict]:
         """Parse Claude's JSON response and prepare updates"""
         try:
             # Extract JSON from response (Claude might wrap it in text)
-            start_idx = response_text.find('{')
-            end_idx = response_text.rfind('}') + 1
-            
+            start_idx = response_text.find("{")
+            end_idx = response_text.rfind("}") + 1
+
             if start_idx == -1 or end_idx == 0:
                 print("No JSON found in Claude's response")
                 return []
-            
+
             json_str = response_text[start_idx:end_idx]
             parsed_response = json.loads(json_str)
-            
-            processed_cards = parsed_response.get('processed_cards', [])
-            
+
+            processed_cards = parsed_response.get("processed_cards", [])
+
             return processed_cards
-            
+
         except json.JSONDecodeError as e:
             print(f"Error parsing Claude's response as JSON: {e}")
             print("Raw response:", response_text[:500])
@@ -1422,204 +1475,246 @@ Return format example: (output nothing else)
         except Exception as e:
             print(f"Error processing Claude's response: {e}")
             return []
-    
+
     def _add_forvo_audio(self, card: Dict):
         """Add Forvo audio to a card if appropriate"""
         if not self.forvo.api_key or not self.anki:
             return
-            
-        updated_fields = card.get('updated_fields', {})
-        front_field = updated_fields.get('Front', '')
-        
+
+        updated_fields = card.get("updated_fields", {})
+        front_field = updated_fields.get("Front", "")
+
         # Extract the main word from the front field (remove articles, parentheses, etc.)
         word = self._extract_main_word(front_field)
-        
-        if word and not updated_fields.get('Audio'):
+
+        if word and not updated_fields.get("Audio"):
             print(f"  Downloading audio for '{word}'...")
-            
+
             audio_data = self.forvo.download_pronunciation(word)
             if audio_data:
                 # Store the audio file in Anki's media collection
-                if self.anki.store_media_file(audio_data['filename'], audio_data['data']):
+                if self.anki.store_media_file(
+                    audio_data["filename"], audio_data["data"]
+                ):
                     # Create audio tag for Anki
                     audio_tag = f"[sound:{audio_data['filename']}]"
-                    updated_fields['Audio'] = audio_tag
-                    card['updated_fields'] = updated_fields
-                    
+                    updated_fields["Audio"] = audio_tag
+                    card["updated_fields"] = updated_fields
+
                     print(f"  ✓ Audio added: {audio_data['filename']}")
                 else:
                     print(f"  ✗ Failed to store audio file for '{word}'")
             else:
                 print(f"  - No audio found for '{word}'")
-    
+
     def _extract_main_word(self, front_field: str) -> str:
         """Extract the main Swedish word from the front field"""
         # Remove HTML tags
-        clean_text = re.sub(r'<[^>]+>', '', front_field)
-        
+        clean_text = re.sub(r"<[^>]+>", "", front_field)
+
         # Remove articles
-        clean_text = re.sub(r'^(en|ett|den|det|att)\s+', '', clean_text, flags=re.IGNORECASE)
-        
+        clean_text = re.sub(
+            r"^(en|ett|den|det|att)\s+", "", clean_text, flags=re.IGNORECASE
+        )
+
         # Remove parentheses and their contents
-        clean_text = re.sub(r'\([^)]*\)', '', clean_text)
-        
+        clean_text = re.sub(r"\([^)]*\)", "", clean_text)
+
         # Take the first word
         words = clean_text.strip().split()
-        return words[0] if words else ''
+        return words[0] if words else ""
+
 
 class AnkiDeckFixer:
     """Main class to orchestrate the deck fixing process"""
-    
-    def __init__(self, claude_api_key: str, forvo_api_key: Optional[str] = None, should_create_backup: bool = True):
+
+    def __init__(
+        self,
+        claude_api_key: str,
+        forvo_api_key: Optional[str] = None,
+        should_create_backup: bool = True,
+    ):
         self.anki = AnkiConnector()
         self.processor = SwedishCardProcessor(claude_api_key, forvo_api_key, self.anki)
         self.backup_created = False
         self.should_create_backup = should_create_backup
-        
+
     def create_backup(self, deck_name: str) -> Optional[str]:
         """Create backup of the deck if enabled"""
         if not self.should_create_backup:
             return None
-            
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_name = f"{deck_name}_backup_{timestamp}"
         backup_path = f"./{backup_name}.apkg"
-        
+
         try:
             print(f"Creating backup of deck '{deck_name}' as '{backup_path}'...")
             start_time = time.time()
             self.anki.export_deck(deck_name, backup_path)
-            print(f"✓ Backup created: {backup_path} in {time.time() - start_time:.2f} seconds")
+            print(
+                f"✓ Backup created: {backup_path} in {time.time() - start_time:.2f} seconds"
+            )
             self.backup_created = True
             return backup_path
         except Exception as e:
             print(f"✗ Failed to create backup: {e}")
             raise
-    
+
     def process_deck(self, deck_name: str, card_ids: List[int], batch_size: int = 10):
         """Process the entire deck in batches"""
-        
+
         # Process in batches
         processed_count = 0
         for i in range(0, len(card_ids), batch_size):
-            batch_card_ids = card_ids[i:i + batch_size]
+            batch_card_ids = card_ids[i : i + batch_size]
             batch_num = i // batch_size + 1
             total_batches = (len(card_ids) + batch_size - 1) // batch_size
-            
-            print(f"\n--- Processing batch {batch_num}/{total_batches} ({len(batch_card_ids)} cards) ---")
-            
+
+            print(
+                f"\n--- Processing batch {batch_num}/{total_batches} ({len(batch_card_ids)} cards) ---"
+            )
+
             # Get card info
             try:
                 cards_info = self.anki.get_card_info(batch_card_ids)
-                
+
                 # Get unique note IDs and their info
-                note_ids = list(set([card['note'] for card in cards_info]))
+                note_ids = list(set([card["note"] for card in cards_info]))
                 notes_info = self.anki.get_note_info(note_ids)
-                
+
                 # Combine card and note info
                 enriched_cards = []
                 for card in cards_info:
-                    note_id = card['note']
-                    note_info = next((n for n in notes_info if n['noteId'] == note_id), {})
-                    card['note'] = note_info
+                    note_id = card["note"]
+                    note_info = next(
+                        (n for n in notes_info if n["noteId"] == note_id), {}
+                    )
+                    card["note"] = note_info
                     enriched_cards.append(card)
-                
+
                 # Process with Claude
-                processed_cards, full_log = self.processor.process_card_batch(enriched_cards)
-                
+                processed_cards, full_log = self.processor.process_card_batch(
+                    enriched_cards
+                )
+
                 if not processed_cards:
                     print("No changes suggested by Claude for this batch")
                     continue
-                
+
                 # Review changes before applying
                 print(f"\nClaude suggests {len(processed_cards)} changes:")
                 for card in processed_cards:
                     # Get the original card info to show the front field
-                    original_card = next((c for c in enriched_cards if c['note']['noteId'] == card['note_id']), None)
+                    original_card = next(
+                        (
+                            c
+                            for c in enriched_cards
+                            if c["note"]["noteId"] == card["note_id"]
+                        ),
+                        None,
+                    )
                     if original_card:
-                        front_field = original_card['note']['fields'].get('Front', 'Unknown')
+                        front_field = original_card["note"]["fields"].get(
+                            "Front", "Unknown"
+                        )
                         print(f"\n--- Card: {front_field} ---")
-                        
+
                         # Show field changes with diff formatting
-                        updated_fields = card.get('updated_fields', {})
-                        original_fields = original_card['note']['fields']
-                        
+                        updated_fields = card.get("updated_fields", {})
+                        original_fields = original_card["note"]["fields"]
+
                         for field_name, new_value in updated_fields.items():
-                            old_value = original_fields.get(field_name, {}).get('value', '')
+                            old_value = original_fields.get(field_name, {}).get(
+                                "value", ""
+                            )
                             if old_value != new_value:
-                                DiffFormatter.print_field_changes(field_name, old_value, new_value)
-                
+                                DiffFormatter.print_field_changes(
+                                    field_name, old_value, new_value
+                                )
+
                 # Ask for confirmation
-                response = input(f"\nApply these changes to batch {batch_num}? (y/n/s=skip/q=quit): ").lower()
-                
-                if response == 'q':
+                response = input(
+                    f"\nApply these changes to batch {batch_num}? (y/n/s=skip/q=quit): "
+                ).lower()
+
+                if response == "q":
                     print("Stopping processing.")
                     break
-                elif response == 's':
+                elif response == "s":
                     print("Skipping this batch.")
                     continue
-                elif response != 'y':
+                elif response != "y":
                     print("Skipping this batch.")
                     continue
-                
+
                 # Apply changes
                 changes_applied = 0
                 for card in processed_cards:
                     try:
                         print(f"\nApplying changes to note ID {card}...")
-                        
-                        note_id = card['note_id']
-                        updated_fields = card.get('updated_fields', {})
-                        
+
+                        note_id = card["note_id"]
+                        updated_fields = card.get("updated_fields", {})
+
                         if updated_fields:
                             for field_name, new_value in updated_fields.items():
-                                new_value = new_value.replace('\n', '<br>')
+                                new_value = new_value.replace("\n", "<br>")
                                 updated_fields[field_name] = new_value
-                            
+
                             prev_tags = self.anki.get_note_tags(note_id)
-                            tags = prev_tags + ['reviewed']
+                            tags = prev_tags + ["reviewed"]
                             self.anki.update_note(note_id, updated_fields, tags)
                             changes_applied += 1
-                        
+
                     except Exception as e:
                         print(f"✗ Failed to update note {card['note_id']}: {e}")
-                
+
                 print(f"✓ Applied {changes_applied} changes in batch {batch_num}")
                 processed_count += changes_applied
-                
+
             except Exception as e:
                 print(f"✗ Error processing batch {batch_num}: {e}")
                 continue
-            
+
             # Small delay to be respectful to APIs
             time.sleep(1)
-        
-        print(f"=== Processing Complete ===")
+
+        print("=== Processing Complete ===")
         print(f"Total cards processed: {processed_count}")
-    
-    def process_cards_for_review(self, deck_name: str, batch_size: int = 10, start_from: int = 0, word_list: Optional[str] = None, flagged_only: bool = False) -> Dict[str, Any]:
+
+    def process_cards_for_review(
+        self,
+        deck_name: str,
+        batch_size: int = 10,
+        start_from: int = 0,
+        word_list: Optional[str] = None,
+        flagged_only: bool = False,
+    ) -> Dict[str, Any]:
         """Process cards and return results for web interface review"""
 
         # Verify deck exists
         deck_names = self.anki.get_deck_names()
-        
+
         if deck_name not in deck_names:
-            raise Exception(f"Deck '{deck_name}' not found. Available decks: {', '.join(deck_names)}")
-        
+            raise Exception(
+                f"Deck '{deck_name}' not found. Available decks: {', '.join(deck_names)}"
+            )
+
         # Create backup if enabled
         self.create_backup(deck_name)
-        
+
         # Build target card list
         card_ids = []
         if word_list:
             # Use provided word list to filter cards (like --word_list)
-            words = [word.strip() for word in word_list.split(',') if word.strip()]
+            words = [word.strip() for word in word_list.split(",") if word.strip()]
             print(f"Filtering cards to only include words: {', '.join(words)}")
             seen = set()
             updated_word_count = 0
             new_word_count = 0
             for word in words:
-                search = f'front:*{word}*'
+                search = f"front:*{word}*"
                 results = self.anki.get_cards_in_deck_with_search(deck_name, search)
                 if results:
                     for cid in results:
@@ -1633,96 +1728,97 @@ class AnkiDeckFixer:
                     word = word[0].upper() + word[1:]
                     new_note_id = self.anki.add_note(
                         deck_name,
-                        'Basic (with audio)',
-                        {
-                            'Front': word,
-                            'Back': '',
-                            'Audio': ''
-                        },
-                        [])
+                        "Basic (with audio)",
+                        {"Front": word, "Back": "", "Audio": ""},
+                        [],
+                    )
                     if new_note_id:
                         card_ids.append(new_note_id)
                         seen.add(new_note_id)
                         new_word_count += 1
-            
-            print(f"Found {updated_word_count} existing words, added {new_word_count} new words, total {len(card_ids)} cards to review")
+
+            print(
+                f"Found {updated_word_count} existing words, added {new_word_count} new words, total {len(card_ids)} cards to review"
+            )
         else:
             # Get all non-reviewed cards in deck
-            search = '-tag:reviewed'
+            search = "-tag:reviewed"
             if flagged_only:
-                search += ' flag:1'
+                search += " flag:1"
             card_ids = self.anki.get_cards_in_deck_with_search(deck_name, search)
-            
+
             if len(card_ids) == 0:
                 print("Found 0 cards to review")
                 return {
-                    'deck_name': deck_name,
-                    'batch_size': batch_size,
-                    'start_from': start_from,
-                    'processed_count': 0,
-                    'processed_cards': [],
-                    'full_log': ''
+                    "deck_name": deck_name,
+                    "batch_size": batch_size,
+                    "start_from": start_from,
+                    "processed_count": 0,
+                    "processed_cards": [],
+                    "full_log": "",
                 }
-            
+
             # Sort cards to prioritize important ones
             print(f"Sorting {len(card_ids)} cards by priority...")
             card_ids = self._sort_cards_by_priority(card_ids)
-        
+
         if start_from > 0:
             card_ids = card_ids[start_from:]
             print(f"Sliced to start from {start_from}, now have {len(card_ids)} cards")
-        
+
         # Limit to batch_size for processing
         if len(card_ids) > batch_size:
             card_ids = card_ids[:batch_size]
             print(f"Batch size: {batch_size}, processing {len(card_ids)} cards")
-        
+
         # If after filtering there are no cards, return empty
         if not card_ids:
             print("Found 0 cards to process after filtering")
             return {
-                'deck_name': deck_name,
-                'batch_size': batch_size,
-                'start_from': start_from,
-                'processed_count': 0,
-                'processed_cards': [],
-                'full_log': ''
+                "deck_name": deck_name,
+                "batch_size": batch_size,
+                "start_from": start_from,
+                "processed_count": 0,
+                "processed_cards": [],
+                "full_log": "",
             }
-        
+
         # Get card info
         cards_info = self.anki.get_card_info(card_ids)
-        
+
         # Get unique note IDs and their info
         # note_ids = list(set([card['note'] for card in cards_info]))
         note_ids = set()
         for card in cards_info:
-            if card.get('note') is not None:
-                note_ids.add(card['note'])
+            if card.get("note") is not None:
+                note_ids.add(card["note"])
             else:
                 print(f"Card doesn't contain note property, skipping: {card}")
         note_ids = list(note_ids)
         notes_info = self.anki.get_note_info(note_ids)
-        
+
         # Combine card and note info
         enriched_cards = []
         for card in cards_info:
-            note_id = card['note']
-            note_info = next((n for n in notes_info if n['noteId'] == note_id), {})
-            card['note'] = note_info
+            note_id = card["note"]
+            note_info = next((n for n in notes_info if n["noteId"] == note_id), {})
+            card["note"] = note_info
             enriched_cards.append(card)
-        
+
         # Process with Claude
         print("Processing with Claude API...")
         processed_cards, full_log = self.processor.process_card_batch(enriched_cards)
         print(f"Claude processing complete, got {len(processed_cards)} processed cards")
-        
+
         # Add original fields for comparison
         for processed_card in processed_cards:
-            note_id = processed_card['note_id']
-            original_card = next((c for c in enriched_cards if c['note']['noteId'] == note_id), None)
+            note_id = processed_card["note_id"]
+            original_card = next(
+                (c for c in enriched_cards if c["note"]["noteId"] == note_id), None
+            )
             if original_card:
-                processed_card['original_fields'] = original_card['note']['fields']
-        
+                processed_card["original_fields"] = original_card["note"]["fields"]
+
         # Sanitize processed cards for JSON serialization
         def sanitize_for_json(obj):
             """Recursively sanitize object for JSON serialization"""
@@ -1732,139 +1828,151 @@ class AnkiDeckFixer:
                 return [sanitize_for_json(item) for item in obj]
             elif isinstance(obj, str):
                 # Replace problematic characters that might break JSON
-                return obj.replace('\r\n', '\n').replace('\r', '\n').replace('\x00', '')
+                return obj.replace("\r\n", "\n").replace("\r", "\n").replace("\x00", "")
             else:
                 return obj
-        
+
         sanitized_cards = sanitize_for_json(processed_cards)
-        
+
         return {
-            'deck_name': deck_name,
-            'batch_size': batch_size,
-            'start_from': start_from,
-            'processed_count': len(processed_cards),
-            'processed_cards': sanitized_cards,
-            'full_log': full_log
+            "deck_name": deck_name,
+            "batch_size": batch_size,
+            "start_from": start_from,
+            "processed_count": len(processed_cards),
+            "processed_cards": sanitized_cards,
+            "full_log": full_log,
         }
-    
+
     def apply_selected_changes(self, changes_data: Dict[str, Any]) -> Dict[str, Any]:
         """Apply selected changes from the web interface"""
-        
-        selected_cards = changes_data.get('cards', [])
-        results = {
-            'applied_count': 0,
-            'failed_count': 0,
-            'errors': []
-        }
-        
+
+        selected_cards = changes_data.get("cards", [])
+        results = {"applied_count": 0, "failed_count": 0, "errors": []}
+
         for card in selected_cards:
             try:
-                note_id = card['note_id']
-                updated_fields = card.get('updated_fields', {})
-                
+                note_id = card["note_id"]
+                updated_fields = card.get("updated_fields", {})
+
                 if updated_fields:
                     for field_name, new_value in updated_fields.items():
-                        new_value = new_value.replace('\n', '<br>')
+                        new_value = new_value.replace("\n", "<br>")
                         updated_fields[field_name] = new_value
-                    
+
                     # TODO: Add forvo audio & change note type when needed
 
-                    tags = self.anki.get_note_tags(note_id) + ['reviewed']
+                    tags = self.anki.get_note_tags(note_id) + ["reviewed"]
                     self.anki.update_note(note_id, updated_fields, tags)
-                    results['applied_count'] += 1
-            
+                    results["applied_count"] += 1
+
             except Exception as e:
-                results['failed_count'] += 1
-                results['errors'].append(f"Note {card.get('note_id', 'unknown')}: {str(e)}")
-        
+                results["failed_count"] += 1
+                results["errors"].append(
+                    f"Note {card.get('note_id', 'unknown')}: {str(e)}"
+                )
+
         return results
-    
+
     def _sort_cards_by_priority(self, card_ids: List[int]) -> List[int]:
         if not card_ids:
             return card_ids
-        
+
         # Get card info including stats
         cards_info = self.anki.get_card_info(card_ids)
-        
+
         # Get note info to check flags
-        note_ids = list(set([card['note'] for card in cards_info]))
-        notes_info = self.anki.get_note_info(note_ids)
-        notes_dict = {note['noteId']: note for note in notes_info}
-        
+        # note_ids = list(set([card["note"] for card in cards_info]))
+        # notes_info = self.anki.get_note_info(note_ids)
+        # notes_dict = {note["noteId"]: note for note in notes_info}
+
         # Create sorting data
         card_sort_data = []
         for card in cards_info:
-
             # note_id = card['note']
             # note = notes_dict.get(note_id, {})
             has_flag_1 = False
             # TODO: Get flags
 
             # Get review count (reps field)
-            review_count = card.get('reps', 0)
-            
+            review_count = card.get("reps", 0)
+
             # Get creation date (id field divided by 1000 gives proxy for timestamp)
-            creation_timestamp = card.get('id', 0) // 1000
-            
-            card_sort_data.append({
-                'id': card['cardId'],
-                'has_flag_1': has_flag_1,
-                'review_count': review_count,
-                'creation_timestamp': creation_timestamp,
-                'less_than_3_reviews': review_count < 3
-            })
-        
+            creation_timestamp = card.get("id", 0) // 1000
+
+            card_sort_data.append(
+                {
+                    "id": card["cardId"],
+                    "has_flag_1": has_flag_1,
+                    "review_count": review_count,
+                    "creation_timestamp": creation_timestamp,
+                    "less_than_3_reviews": review_count < 3,
+                }
+            )
+
         # Sort by priority:
         # 1. Flag 1 cards first (has_flag_1=True)
-        # 2. Then cards with <3 reviews (less_than_3_reviews=True)  
+        # 2. Then cards with <3 reviews (less_than_3_reviews=True)
         # 3. Within each group, sort by creation date (ascending - older first)
         # 4. All other cards last
-        
+
         def sort_key(card_data):
             return (
-                not card_data['has_flag_1'],  # False (flag 1) comes before True (no flag 1)
-                not card_data['less_than_3_reviews'],  # False (<3 reviews) comes before True (>=3 reviews)
-                card_data['creation_timestamp']  # Ascending creation date
+                not card_data[
+                    "has_flag_1"
+                ],  # False (flag 1) comes before True (no flag 1)
+                not card_data[
+                    "less_than_3_reviews"
+                ],  # False (<3 reviews) comes before True (>=3 reviews)
+                card_data["creation_timestamp"],  # Ascending creation date
             )
-        
+
         card_sort_data.sort(key=sort_key)
-        
-        sorted_card_ids = [card_data['id'] for card_data in card_sort_data]
-        
+
+        sorted_card_ids = [card_data["id"] for card_data in card_sort_data]
+
         # Log sorting results
-        flag_1_count = sum(1 for card in card_sort_data if card['has_flag_1'])
-        low_review_count = sum(1 for card in card_sort_data if card['less_than_3_reviews'] and not card['has_flag_1'])
-        
-        print(f"Sorting complete:")
+        flag_1_count = sum(1 for card in card_sort_data if card["has_flag_1"])
+        low_review_count = sum(
+            1
+            for card in card_sort_data
+            if card["less_than_3_reviews"] and not card["has_flag_1"]
+        )
+
+        print("Sorting complete:")
         print(f"  - {flag_1_count} cards with flag 1 (prioritized first)")
         print(f"  - {low_review_count} cards with <3 reviews (prioritized second)")
-        print(f"  - {len(card_ids) - flag_1_count - low_review_count} other cards (prioritized last)")
-        
+        print(
+            f"  - {len(card_ids) - flag_1_count - low_review_count} other cards (prioritized last)"
+        )
+
         return sorted_card_ids
+
 
 def main():
     """Main entry point"""
-    
+
     # Parse command line arguments
     args = parse_arguments()
-    
+
     if args.word_list and args.flagged_only:
-        print("Warning: --word_list and --flagged_only are mutually exclusive, --flagged_only will be ignored")
+        print(
+            "Warning: --word_list and --flagged_only are mutually exclusive, --flagged_only will be ignored"
+        )
 
     # Check for Claude API key
-    claude_api_key = os.getenv('ANTHROPIC_API_KEY')
+    claude_api_key = os.getenv("ANTHROPIC_API_KEY")
     if not claude_api_key:
         print("✗ Please set your ANTHROPIC_API_KEY environment variable")
         print("  Export it in your shell: export ANTHROPIC_API_KEY='your-key-here'")
         return
-    
+
     # Check for optional Forvo API key
-    forvo_api_key = os.getenv('FORVO_API_KEY')
+    forvo_api_key = os.getenv("FORVO_API_KEY")
     if forvo_api_key:
         print("✓ Forvo API key found - will add pronunciation audio")
     else:
         print("ℹ No Forvo API key found (FORVO_API_KEY) - audio features disabled")
-    
+
     # Initialize fixer
     try:
         should_create_backup = not args.no_backup
@@ -1872,7 +1980,7 @@ def main():
     except Exception as e:
         print(f"✗ Failed to initialize: {e}")
         return
-    
+
     # Handle list decks option
     if args.list_decks:
         try:
@@ -1889,7 +1997,7 @@ def main():
         try:
             server = start_web_server(fixer, args.port)
             print("Press Ctrl+C to stop the server")
-            
+
             # Keep the server running
             try:
                 while True:
@@ -1901,11 +2009,11 @@ def main():
         except Exception as e:
             print(f"✗ Error starting web server: {e}")
         return
-    
+
     # Get available decks
     try:
         decks = fixer.anki.get_deck_names()
-        
+
         # Get deck selection
         if args.deck:
             deck_name = args.deck
@@ -1916,9 +2024,9 @@ def main():
             print("Available decks:")
             for i, deck in enumerate(decks, 1):
                 print(f"  {i}. {deck}")
-            
+
             deck_choice = input("\nEnter deck name or number: ").strip()
-            
+
             # Parse choice
             if deck_choice.isdigit():
                 deck_idx = int(deck_choice) - 1
@@ -1932,42 +2040,44 @@ def main():
                 if deck_name not in decks:
                     print(f"Deck '{deck_name}' not found")
                     return
-        
+
         # Get processing options (or use command line args)
         batch_size = args.batch_size
         start_from = args.start_from
-        
+
         if start_from > 0:
             start_from -= 1  # Convert to 0-based index
-        
+
         # Show configuration
-        print(f"\nConfiguration:")
+        print("\nConfiguration:")
         print(f"  Deck: {deck_name}")
         print(f"  Batch size: {batch_size}")
         print(f"  Start from: card {args.start_from if args.start_from > 0 else 1}")
         print(f"  Backup: {'enabled' if should_create_backup else 'disabled'}")
         print(f"  Audio: {'enabled' if forvo_api_key else 'disabled'}")
-        
+
         if not args.deck:
             confirm = input("\nProceed? (y/n): ").lower()
-            if confirm != 'y':
+            if confirm != "y":
                 print("Cancelled.")
                 return
-        
+
         print(f"\nStarting to process deck '{deck_name}'")
         print("Press Ctrl+C at any time to stop safely")
-        
+
         # Verify deck exists
         deck_names = fixer.anki.get_deck_names()
         if deck_name not in deck_names:
-            print(f"✗ Deck '{deck_name}' not found. Available decks: {', '.join(deck_names)}")
+            print(
+                f"✗ Deck '{deck_name}' not found. Available decks: {', '.join(deck_names)}"
+            )
             return
-        
+
         # Create backup if enabled
         fixer.create_backup(deck_name)
-        
+
         card_ids = []
-        
+
         if args.parse_offline_updates:
             for update in offline_updates:
                 fixer.anki.request("updateNote", **update)
@@ -1975,10 +2085,12 @@ def main():
 
         if args.word_list:
             # Use provided word list to filter cards
-            existing_words = [word.strip() for word in args.word_list.split(',') if word.strip()]
+            existing_words = [
+                word.strip() for word in args.word_list.split(",") if word.strip()
+            ]
             print(f"Filtering cards to only include words: {', '.join(existing_words)}")
             for word in existing_words:
-                search = f'front:*{word}*'
+                search = f"front:*{word}*"
                 results = fixer.anki.get_cards_in_deck_with_search(deck_name, search)
                 if results:
                     print(f"Found {len(results)} cards for word '{word}'")
@@ -1986,26 +2098,29 @@ def main():
             print(f"Found {len(card_ids)} matching cards in deck '{deck_name}'")
         else:
             # Get all cards in deck
-            search = '-tag:reviewed'
+            search = "-tag:reviewed"
             if args.flagged_only:
-                search += ' flag:1'
-            card_ids : List[int] = fixer.anki.get_cards_in_deck_with_search(deck_name, search)
+                search += " flag:1"
+            card_ids: List[int] = fixer.anki.get_cards_in_deck_with_search(
+                deck_name, search
+            )
             print(f"Found {len(card_ids)} cards in deck '{deck_name}'")
-        
+
             # Sort cards to prioritize important ones
             print("Sorting cards by priority...")
             card_ids = fixer._sort_cards_by_priority(card_ids)
-        
+
         if start_from > 0:
             card_ids = card_ids[start_from:]
             print(f"Starting from card {start_from + 1}")
-        
+
         fixer.process_deck(deck_name, card_ids, batch_size)
-        
+
     except KeyboardInterrupt:
         print("\n\nProcessing interrupted by user.")
     except Exception as e:
         print(f"✗ Error: {e}")
+
 
 if __name__ == "__main__":
     main()
