@@ -582,14 +582,10 @@ class WebServer(BaseHTTPRequestHandler):
                         <select id="deckSelect" class="form-control"></select>
                     </div>
                 </div>
-                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; border: 1px solid #ddd; border-radius: 12px; padding: 10px; margin-top: 15px; background-color: #deeffd;">
+                <div style="display: grid; grid-template-columns: 1fr; gap: 15px; border: 1px solid #ddd; border-radius: 12px; padding: 10px; margin-top: 15px; background-color: #deeffd;">
                     <div class="form-group">
                         <label for="batchSize">Batch Size:</label>
                         <input type="number" id="batchSize" class="form-control" value="10" min="1" max="500">
-                    </div>
-                    <div class="form-group">
-                        <label for="startFrom">Start From:</label>
-                        <input type="number" id="startFrom" class="form-control" value="0" min="0">
                     </div>
                 </div>
                 <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 15px; border: 1px solid #ddd; border-radius: 12px; padding: 10px; margin-top: 15px;     background-color: #f5edeb;">
@@ -701,7 +697,6 @@ class WebServer(BaseHTTPRequestHandler):
         async function processCards() {
             const deckName = document.getElementById('deckSelect').value;
             const batchSize = parseInt(document.getElementById('batchSize').value);
-            const startFrom = parseInt(document.getElementById('startFrom').value);
             const createBackup = document.getElementById('createBackup').checked;
             const wordList = document.getElementById('wordList').value.trim();
             const flaggedOnly = document.getElementById('flaggedOnly').checked;
@@ -724,7 +719,7 @@ class WebServer(BaseHTTPRequestHandler):
                     body: JSON.stringify({
                         deck_name: deckName,
                         batch_size: batchSize,
-                        start_from: startFrom,
+                        start_from: 0,
                         create_backup: createBackup,
                         word_list: wordList,
                         flagged_only: flaggedOnly
@@ -787,7 +782,8 @@ class WebServer(BaseHTTPRequestHandler):
                 hideProcessing();
                 selectedCards.clear();
                 updateStats();
-                
+                cardData = [];
+
             } catch (error) {
                 console.error('Error applying changes:', error);
                 alert('Error applying changes: ' + error.message);
@@ -977,11 +973,13 @@ class WebServer(BaseHTTPRequestHandler):
                 if (swedishWord) {
                     const wiktionaryUrl = `https://sv.wiktionary.org/wiki/${encodeURIComponent(swedishWord)}`;
                     const reversoUrl = `https://context.reverso.net/översättning/svenska-engelska/${encodeURIComponent(swedishWord)}`;
-                    
+                    const synonymerUrl = `https://www.synonymer.se/sv-syn/${encodeURIComponent(swedishWord)}`;
+
                     referencesHtml = `
                         <div class="reference-links">
                             <a href="${wiktionaryUrl}" target="_blank" rel="noopener">📚 Wiktionary</a>
                             <a href="${reversoUrl}" target="_blank" rel="noopener">🔄 Reverso Context</a>
+                            <a href="${synonymerUrl}" target="_blank" rel="noopener">🔣 Synonymer</a>
                         </div>
                     `;
                 }
@@ -1880,70 +1878,17 @@ class AnkiDeckFixer:
         # Get card info including stats
         cards_info = self.anki.get_card_info(card_ids)
 
-        # Get note info to check flags
-        # note_ids = list(set([card["note"] for card in cards_info]))
-        # notes_info = self.anki.get_note_info(note_ids)
-        # notes_dict = {note["noteId"]: note for note in notes_info}
+        # Order new cards by their new-position due (ascending)
+        new_cards_sorted = sorted(cards_info, key=lambda c: int(c.get("due", 0)))
 
-        # Create sorting data
-        card_sort_data = []
-        for card in cards_info:
-            # note_id = card['note']
-            # note = notes_dict.get(note_id, {})
-            has_flag_1 = False
-            # TODO: Get flags
+        print("card: ", new_cards_sorted[0])
 
-            # Get review count (reps field)
-            review_count = card.get("reps", 0)
+        sorted_card_ids = [c.get("cardId", 0) for c in new_cards_sorted]
 
-            # Get creation date (id field divided by 1000 gives proxy for timestamp)
-            creation_timestamp = card.get("id", 0) // 1000
-
-            card_sort_data.append(
-                {
-                    "id": card["cardId"],
-                    "has_flag_1": has_flag_1,
-                    "review_count": review_count,
-                    "creation_timestamp": creation_timestamp,
-                    "less_than_3_reviews": review_count < 3,
-                }
-            )
-
-        # Sort by priority:
-        # 1. Flag 1 cards first (has_flag_1=True)
-        # 2. Then cards with <3 reviews (less_than_3_reviews=True)
-        # 3. Within each group, sort by creation date (ascending - older first)
-        # 4. All other cards last
-
-        def sort_key(card_data):
-            return (
-                not card_data[
-                    "has_flag_1"
-                ],  # False (flag 1) comes before True (no flag 1)
-                not card_data[
-                    "less_than_3_reviews"
-                ],  # False (<3 reviews) comes before True (>=3 reviews)
-                card_data["creation_timestamp"],  # Ascending creation date
-            )
-
-        card_sort_data.sort(key=sort_key)
-
-        sorted_card_ids = [card_data["id"] for card_data in card_sort_data]
-
-        # Log sorting results
-        flag_1_count = sum(1 for card in card_sort_data if card["has_flag_1"])
-        low_review_count = sum(
-            1
-            for card in card_sort_data
-            if card["less_than_3_reviews"] and not card["has_flag_1"]
-        )
-
-        print("Sorting complete:")
-        print(f"  - {flag_1_count} cards with flag 1 (prioritized first)")
-        print(f"  - {low_review_count} cards with <3 reviews (prioritized second)")
-        print(
-            f"  - {len(card_ids) - flag_1_count - low_review_count} other cards (prioritized last)"
-        )
+        # Log selection results
+        print("Selection complete (new cards only):")
+        print(f"  - Total input cards: {len(cards_info)}")
+        print(f"  - Selected new cards (reps=0): {len(sorted_card_ids)}")
 
         return sorted_card_ids
 
@@ -2098,9 +2043,11 @@ def main():
             print(f"Found {len(card_ids)} matching cards in deck '{deck_name}'")
         else:
             # Get all cards in deck
-            search = "-tag:reviewed"
+            search = ""
             if args.flagged_only:
-                search += " flag:1"
+                search = " flag:1"
+            else:
+                search = "-tag:reviewed is:new"
             card_ids: List[int] = fixer.anki.get_cards_in_deck_with_search(
                 deck_name, search
             )
