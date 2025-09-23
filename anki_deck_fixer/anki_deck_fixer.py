@@ -33,6 +33,7 @@ import webbrowser
 from urllib.parse import urlparse
 import traceback
 
+MODEL_NAME = "claude-sonnet-4-20250514"
 
 class AnkiConnector:
     """Handles communication with Anki through AnkiConnect"""
@@ -473,7 +474,7 @@ class WebServer(BaseHTTPRequestHandler):
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Anki Card Fixer - Web Interface</title>
+    <title>Anki Card Fixer</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #232728; min-height: 100vh; padding: 20px; }
@@ -525,7 +526,7 @@ class WebServer(BaseHTTPRequestHandler):
         .stat-item { display: flex; align-items: center; gap: 8px; }
         .empty-state { text-align: center; padding: 60px 20px; color: #6c757d; }
         .diff-container { font-family: 'Consolas', 'Monaco', monospace; font-size: 14px; line-height: 1.5; }
-        .diff-split { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; border: 1px solid #ddd; border-radius: 4px; overflow: hidden; max-height: 300px; }
+        .diff-split { display: grid; grid-template-columns: 1fr 1fr; gap: 2px; border: 1px solid #ddd; border-radius: 4px; overflow: hidden; /* max-height: 300px; */ }
         .diff-left, .diff-right { background: #f8f9fa; display: flex; flex-direction: column; min-height: 0; }
         .diff-header { background: #e9ecef; padding: 5px; font-weight: 600; font-size: 12px; color: #495057; text-transform: uppercase; letter-spacing: 0.5px; border-bottom: 1px solid #ddd; flex-shrink: 0; }
         .diff-content { padding: 8px; font-family: 'Consolas', 'Monaco', monospace; font-size: 13px; line-height: 1.4; white-space: pre-wrap; word-wrap: break-word; overflow-y: auto; flex: 1; }
@@ -1374,7 +1375,7 @@ class SwedishCardProcessor:
         try:
             print("Calling Claude API...")
             response = self.client.messages.create(
-                model="claude-3-5-sonnet-20241022",
+                model=MODEL_NAME,
                 max_tokens=4000,
                 messages=[{"role": "user", "content": prompt}],
             )
@@ -1712,7 +1713,7 @@ class AnkiDeckFixer:
             updated_word_count = 0
             new_word_count = 0
             for word in words:
-                search = f"front:*{word}*"
+                search = f"\"front:re:^.*\b{word}\b.*$\""
                 results = self.anki.get_cards_in_deck_with_search(deck_name, search)
                 if results:
                     for cid in results:
@@ -1739,10 +1740,11 @@ class AnkiDeckFixer:
                 f"Found {updated_word_count} existing words, added {new_word_count} new words, total {len(card_ids)} cards to review"
             )
         else:
-            # Get all non-reviewed cards in deck
-            search = "-tag:reviewed"
+            search = ""
             if flagged_only:
-                search += " flag:1"
+                search = " flag:1"
+            else:
+                search = "-tag:reviewed is:new" # By default only process new, unreviewed cards
             card_ids = self.anki.get_cards_in_deck_with_search(deck_name, search)
 
             if len(card_ids) == 0:
@@ -1880,8 +1882,6 @@ class AnkiDeckFixer:
 
         # Order new cards by their new-position due (ascending)
         new_cards_sorted = sorted(cards_info, key=lambda c: int(c.get("due", 0)))
-
-        print("card: ", new_cards_sorted[0])
 
         sorted_card_ids = [c.get("cardId", 0) for c in new_cards_sorted]
 
@@ -2035,7 +2035,7 @@ def main():
             ]
             print(f"Filtering cards to only include words: {', '.join(existing_words)}")
             for word in existing_words:
-                search = f"front:*{word}*"
+                search = f"\"front:re:^.*\b{word}\b.*$\""
                 results = fixer.anki.get_cards_in_deck_with_search(deck_name, search)
                 if results:
                     print(f"Found {len(results)} cards for word '{word}'")
@@ -2047,7 +2047,7 @@ def main():
             if args.flagged_only:
                 search = " flag:1"
             else:
-                search = "-tag:reviewed is:new"
+                search = "-tag:reviewed is:new" # By default only process new, unreviewed cards
             card_ids: List[int] = fixer.anki.get_cards_in_deck_with_search(
                 deck_name, search
             )
