@@ -17,6 +17,11 @@ Safety features:
 - Allows rollback if needed
 """
 
+# TODO:
+# [ ] Always allow front field to be edited in web interface
+# [ ] Always update cards, even with no changes, to add reviewed tag
+# [x] Don't add new cards until the user explicitly requests it
+
 import json
 import requests
 import os
@@ -46,9 +51,11 @@ class AnkiConnector:
         payload = {"action": action, "version": 6, "params": params}
 
         try:
+            print(f"---action: {action}, params: {params}")
             response: requests.Response = requests.post(self.url, json=payload)
             response.raise_for_status()
             result = response.json()
+            print(f"-----result: {result}")
 
             if result.get("error"):
                 raise Exception(f"AnkiConnect error: {result['error']}")
@@ -1366,6 +1373,10 @@ class SwedishCardProcessor:
             }
             card_data.append(card_info)
 
+        if len(cards) == 0:
+            print("No cards to process")
+            return [], ""
+
         # Create prompt for Claude
         prompt = self._create_processing_prompt(card_data)
         print(
@@ -1384,7 +1395,7 @@ class SwedishCardProcessor:
             raw_claude_response = response.content[0].text
 
             # Process cards and potentially add audio
-            processed_cards = self._parse_claude_response(raw_claude_response, cards)
+            processed_cards = self._parse_claude_response(raw_claude_response)
             print(f"Parsed {len(processed_cards)} cards from Claude response")
 
             # Add Forvo audio where appropriate
@@ -1418,9 +1429,7 @@ Cards to process:
 """
         return final_prompt
 
-    def _parse_claude_response(
-        self, response_text: str, original_cards: List[Dict]
-    ) -> List[Dict]:
+    def _parse_claude_response(self, response_text: str) -> List[Dict]:
         """Parse Claude's JSON response and prepare updates"""
         try:
             # Extract JSON from response (Claude might wrap it in text)
@@ -1531,7 +1540,7 @@ class AnkiDeckFixer:
             print(f"✗ Failed to create backup: {e}")
             raise
 
-    def process_deck(self, deck_name: str, card_ids: List[int], batch_size: int = 10):
+    def process_deck(self, card_ids: List[int], batch_size: int):
         """Process the entire deck in batches"""
 
         # Process in batches
@@ -1676,6 +1685,7 @@ class AnkiDeckFixer:
 
         # Build target card list
         card_ids = []
+        enriched_cards = []  # Initialize for both word_list and regular paths
         if word_list:
             # Use provided word list to filter cards (like --word_list)
             words = [word.strip() for word in word_list.split(",") if word.strip()]
@@ -1684,7 +1694,7 @@ class AnkiDeckFixer:
             updated_word_count = 0
             new_word_count = 0
             for word in words:
-                search = f"\"front:re:^.*\b{word}\b.*$\""
+                search = f"\"front:re:^.*\\b{word}\\b.*$\""
                 results = self.anki.get_cards_in_deck_with_search(deck_name, search)
                 if results:
                     for cid in results:
@@ -1693,19 +1703,26 @@ class AnkiDeckFixer:
                             seen.add(cid)
                             updated_word_count += 1
                 else:
-                    # Add all non-existing words as new cards
-                    # Capitalize the first letter if it's a noun
-                    word = word[0].upper() + word[1:]
-                    new_note_id = self.anki.add_note(
-                        deck_name,
-                        "Basic (with audio)",
-                        {"Front": word, "Back": "", "Audio": ""},
-                        [],
-                    )
-                    if new_note_id:
-                        card_ids.append(new_note_id)
-                        seen.add(new_note_id)
-                        new_word_count += 1
+                    # Create placeholder card for missing word (will be created on apply)
+                    word_capitalized = word[0].upper() + word[1:]
+                    placeholder_card = {
+                        "cardId": f"new_{word}",  # Special ID to indicate new card
+                        "note": {
+                            "noteId": f"new_{word}",
+                            "fields": {
+                                "Front": {"value": word_capitalized},
+                                "Back": {"value": ""},
+                                "Audio": {"value": ""},
+                            },
+                            "tags": []
+                        },
+                        "is_new_card": True
+                    }
+                    # Add to enriched cards list for Claude processing
+                    enriched_cards.append(placeholder_card)
+                    card_ids.append(f"new_{word}")
+                    seen.add(f"new_{word}")
+                    new_word_count += 1
 
             print(
                 f"Found {updated_word_count} existing words, added {new_word_count} new words, total {len(card_ids)} cards to review"
@@ -1754,32 +1771,46 @@ class AnkiDeckFixer:
                 "full_log": "",
             }
 
-        # Get card info
-        cards_info = self.anki.get_card_info(card_ids)
-
-        # Get unique note IDs and their info
-        # note_ids = list(set([card['note'] for card in cards_info]))
-        note_ids = set()
-        for card in cards_info:
-            if card.get("note") is not None:
-                note_ids.add(card["note"])
-            else:
-                print(f"Card doesn't contain note property, skipping: {card}")
-        note_ids = list(note_ids)
-        notes_info = self.anki.get_note_info(note_ids)
-
-        # Combine card and note info
-        enriched_cards = []
-        for card in cards_info:
-            note_id = card["note"]
-            note_info = next((n for n in notes_info if n["noteId"] == note_id), {})
-            card["note"] = note_info
-            enriched_cards.append(card)
+        # Get card info and handle placeholder cards
+        real_card_ids = []
+        
+        # Separate real card IDs from placeholder IDs
+        for card_id in card_ids:
+            if not isinstance(card_id, str) or not card_id.startswith("new_"):
+                real_card_ids.append(card_id)
+        
+        # Get info for real cards
+        if real_card_ids:
+            cards_info = self.anki.get_card_info(real_card_ids)
+            
+            # Get unique note IDs and their info
+            note_ids = set()
+            for i, card in enumerate(cards_info):
+                if card.get("note") is not None:
+                    note_ids.add(card["note"])
+                else:
+                    print(f"Card doesn't contain note property, skipping: {card} ({i})")
+            note_ids = list(note_ids)
+            notes_info = self.anki.get_note_info(note_ids)
+            
+            # Combine card and note info
+            for card in cards_info:
+                if card.get("note") is not None:
+                    note_id = card["note"]
+                    note_info = next((n for n in notes_info if n["noteId"] == note_id), {})
+                    card["note"] = note_info
+                    enriched_cards.append(card)
 
         # Process with Claude
         print("Processing with Claude API...")
         processed_cards, full_log = self.processor.process_card_batch(enriched_cards)
         print(f"Claude processing complete, got {len(processed_cards)} processed cards")
+
+        # Re-attach is_new_card flag for placeholder cards that Claude processed
+        for processed_card in processed_cards:
+            note_id = processed_card.get("note_id", "")
+            if isinstance(note_id, str) and note_id.startswith("new_"):
+                processed_card["is_new_card"] = True
 
         # Add original fields for comparison
         for processed_card in processed_cards:
@@ -1818,6 +1849,7 @@ class AnkiDeckFixer:
         """Apply selected changes from the web interface"""
 
         selected_cards = changes_data.get("cards", [])
+        deck_name = changes_data.get("deck_name")
         results = {"applied_count": 0, "failed_count": 0, "errors": []}
 
         for card in selected_cards:
@@ -1825,16 +1857,39 @@ class AnkiDeckFixer:
                 note_id = card["note_id"]
                 updated_fields = card.get("updated_fields", {})
 
-                if updated_fields:
-                    for field_name, new_value in updated_fields.items():
-                        new_value = new_value.replace("\n", "<br>")
-                        updated_fields[field_name] = new_value
+                # Check if this is a new card placeholder
+                if card.get("is_new_card", False) and isinstance(note_id, str) and note_id.startswith("new_"):
+                    # Create new card
+                    if updated_fields:
+                        for field_name, new_value in updated_fields.items():
+                            new_value = new_value.replace("\n", "<br>")
+                            updated_fields[field_name] = new_value
 
-                    # TODO: Add forvo audio & change note type when needed
+                        # Create the new note in Anki
+                        new_note_id = self.anki.add_note(
+                            deck_name,
+                            "Basic (with audio)",
+                            updated_fields,
+                            ["reviewed"]
+                        )
+                        
+                        if new_note_id:
+                            results["applied_count"] += 1
+                            print(f"✓ Created new card for word: {updated_fields.get('Front', 'unknown')}")
+                        else:
+                            raise Exception("Failed to create new note")
+                else:
+                    # Update existing card
+                    if updated_fields:
+                        for field_name, new_value in updated_fields.items():
+                            new_value = new_value.replace("\n", "<br>")
+                            updated_fields[field_name] = new_value
 
-                    tags = self.anki.get_note_tags(note_id) + ["reviewed"]
-                    self.anki.update_note(note_id, updated_fields, tags)
-                    results["applied_count"] += 1
+                        # TODO: Add forvo audio & change note type when needed
+
+                        tags = self.anki.get_note_tags(note_id) + ["reviewed"]
+                        self.anki.update_note(note_id, updated_fields, tags)
+                        results["applied_count"] += 1
 
             except Exception as e:
                 results["failed_count"] += 1
@@ -2006,7 +2061,7 @@ def main():
             ]
             print(f"Filtering cards to only include words: {', '.join(existing_words)}")
             for word in existing_words:
-                search = f"\"front:re:^.*\b{word}\b.*$\""
+                search = f"\"front:re:^.*\\b{word}\\b.*$\""
                 results = fixer.anki.get_cards_in_deck_with_search(deck_name, search)
                 if results:
                     print(f"Found {len(results)} cards for word '{word}'")
@@ -2032,7 +2087,7 @@ def main():
             card_ids = card_ids[start_from:]
             print(f"Starting from card {start_from + 1}")
 
-        fixer.process_deck(deck_name, card_ids, batch_size)
+        fixer.process_deck(card_ids, batch_size)
 
     except KeyboardInterrupt:
         print("\n\nProcessing interrupted by user.")
