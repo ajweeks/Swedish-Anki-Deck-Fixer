@@ -528,6 +528,10 @@ class WebServer(BaseHTTPRequestHandler):
         .field-content { overflow-y: auto; font-family: 'Consolas', 'Monaco', monospace; font-size: 14px; line-height: 1.5; word-break: break-word; }
         .field-input { width: 100%; min-height: 220px; padding: 5px; border: 1px solid #ddd; border-radius: 8px; font-family: inherit; font-size: 14px; resize: vertical; transition: border-color 0.3s ease; }
         .field-input:focus { outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1); }
+        .field-input-front { width: 100%; min-height: 40px; padding: 5px; border: 1px solid #ddd; border-radius: 8px; font-family: inherit; font-size: 14px; resize: vertical; transition: border-color 0.3s ease; }
+        .field-input-front:focus { outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1); }
+        .field-input-back { width: 100%; min-height: 110px; padding: 5px; border: 1px solid #ddd; border-radius: 8px; font-family: inherit; font-size: 14px; resize: vertical; transition: border-color 0.3s ease; }
+        .field-input-back:focus { outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1); }
         .changes-list { background: #e8f4f8; border-left: 4px solid #17a2b8; padding: 5px; padding-left: 25px; margin-top: 15px; border-radius: 0 8px 8px 0; }
         .stats { display: flex; gap: 20px; align-items: center; font-weight: 500; color: #495057; }
         .stat-item { display: flex; align-items: center; gap: 8px; }
@@ -572,8 +576,7 @@ class WebServer(BaseHTTPRequestHandler):
                 <div class="status-indicator" id="statusIndicator">Connecting...</div>
             </div>
             <div class="stats" id="statsDisplay" style="display: none;">
-                <div class="stat-item"><span>📊</span><span>Total: <span id="totalCards">0</span></span></div>
-                <div class="stat-item"><span>✅</span><span>Selected: <span id="selectedCards">0</span></span></div>
+                <div class="stat-item"><span>✅</span><span>Selected: <span id="selectedCards">0</span>/<span id="totalCards">0</span></span></div>
             </div>
             <div class="control-group" id="actionControls" style="display: none;">
                 <button class="btn btn-secondary" onclick="selectAll()">Select All</button>
@@ -626,6 +629,19 @@ class WebServer(BaseHTTPRequestHandler):
                 <!-- Cards will be generated here -->
             </div>
 
+            <div class="skipped-cards-warning" id="skippedCardsWarning" style="display: none;">
+                <div style="background: #fff3cd; border: 1px solid #ffeaa7; border-radius: 8px; margin: 20px 0; padding: 20px;">
+                    <div style="display: flex; align-items: center; margin-bottom: 15px;">
+                        <span style="font-size: 1.5rem; margin-right: 10px;">⚠️</span>
+                        <h3 style="margin: 0; color: #856404;">Skipped Cards Warning</h3>
+                    </div>
+                    <p style="margin: 0 0 15px 0; color: #856404;">Some cards were skipped during processing. Please review the details below:</p>
+                    <div id="skippedCardsList" style="background: #fff; border: 1px solid #ffeaa7; border-radius: 6px; padding: 15px;">
+                        <!-- Skipped cards will be listed here -->
+                    </div>
+                </div>
+            </div>
+
             <div class="empty-state" id="emptyState" style="display: none;">
                 <div style="font-size: 4rem; margin-bottom: 20px; opacity: 0.5;">📝</div>
                 <h3>No cards to review</h3>
@@ -647,6 +663,7 @@ class WebServer(BaseHTTPRequestHandler):
     <script>
         let cardData = [];
         let selectedCards = new Set();
+        let skippedCards = [];
         let currentDeckName = '';
 
         document.addEventListener('DOMContentLoaded', function() {
@@ -821,8 +838,10 @@ class WebServer(BaseHTTPRequestHandler):
         function loadCardData(data) {
             cardData = data.processed_cards || [];
             full_log = data.full_log || '';
+            skippedCards = data.skipped_cards || [];
             selectedCards.clear();
             renderCards();
+            renderSkippedCards();
             updateStats();
             
             // Show debug section and populate raw output
@@ -844,6 +863,56 @@ class WebServer(BaseHTTPRequestHandler):
             cardData.forEach((card, index) => {
                 const cardElement = createCardElement(card, index);
                 container.appendChild(cardElement);
+            });
+        }
+
+        function renderSkippedCards() {
+            const warningContainer = document.getElementById('skippedCardsWarning');
+            const skippedCardsList = document.getElementById('skippedCardsList');
+            
+            if (!skippedCards || skippedCards.length === 0) {
+                warningContainer.style.display = 'none';
+                return;
+            }
+            
+            warningContainer.style.display = 'block';
+            skippedCardsList.innerHTML = '';
+            
+            skippedCards.forEach((skippedCard, index) => {
+                const skippedItem = document.createElement('div');
+                skippedItem.style.cssText = 'margin-bottom: 12px; padding-bottom: 12px; border-bottom: 1px solid #ffeaa7;';
+                
+                if (index === skippedCards.length - 1) {
+                    skippedItem.style.borderBottom = 'none';
+                    skippedItem.style.marginBottom = '0';
+                    skippedItem.style.paddingBottom = '0';
+                }
+                
+                let title = '';
+                let icon = '';
+                
+                if (skippedCard.reason === 'multiple_matches') {
+                    title = `Word: "${skippedCard.word}"`;
+                    icon = '🔍';
+                } else if (skippedCard.reason === 'missing_note') {
+                    title = `Card ID: ${skippedCard.card_id}`;
+                    icon = '🚫';
+                } else {
+                    title = 'Unknown item';
+                    icon = '❓';
+                }
+                
+                skippedItem.innerHTML = `
+                    <div style="display: flex; align-items: flex-start; margin-bottom: 8px;">
+                        <span style="font-size: 1.2rem; margin-right: 8px; margin-top: 2px;">${icon}</span>
+                        <div style="flex: 1;">
+                            <strong style="color: #856404;">${title}</strong>
+                            <div style="color: #856404; font-size: 0.9rem; margin-top: 4px;">${skippedCard.details}</div>
+                        </div>
+                    </div>
+                `;
+                
+                skippedCardsList.appendChild(skippedItem);
             });
         }
 
@@ -912,15 +981,29 @@ class WebServer(BaseHTTPRequestHandler):
                 const hasChanges = oldValue !== newValue;
                 
                 if (!hasChanges) {
-                    // No changes - just show the original value
-                    fieldsHtml += `
-                        <div class="field-group">
-                            <label class="field-label">${fieldName} <span style="color: #6c757d; font-weight: normal;">(no changes)</span></label>
-                            <div class="field-section" style="border: 1px solid #ddd; border-radius: 8px;">
-                                <div class="field-content" style="padding: 15px;">${escapeHtml(oldValue) || '<em>Empty</em>'}</div>
+                    // No changes - show original value with edit box for Front field
+                    if (fieldName === 'Front') {
+                        fieldsHtml += `
+                            <div class="field-group">
+                                <label class="field-label">${fieldName} <span style="color: #6c757d; font-weight: normal;">(editable)</span></label>
+                                <div class="field-section" style="border: 1px solid #ddd; border-radius: 8px;">
+                                    <textarea class="field-input-front" 
+                                             onchange="updateField(${cardIndex}, '${fieldName}', this.value)"
+                                             oninput="updateFieldAndRefresh(${cardIndex}, '${fieldName}', this.value, 'no-changes-${cardIndex}-${fieldName}')"
+                                             placeholder="Enter ${fieldName} content...">${escapeHtml(oldValue) || ''}</textarea>
+                                </div>
                             </div>
-                        </div>
-                    `;
+                        `;
+                    } else {
+                        fieldsHtml += `
+                            <div class="field-group">
+                                <label class="field-label">${fieldName} <span style="color: #6c757d; font-weight: normal;">(no changes)</span></label>
+                                <div class="field-section" style="border: 1px solid #ddd; border-radius: 8px;">
+                                    <div class="field-content" style="padding: 15px;">${escapeHtml(oldValue) || '<em>Empty</em>'}</div>
+                                </div>
+                            </div>
+                        `;
+                    }
                 } else {
                     // Has changes - show full tabbed interface
                     const diffHtml = generateDiff(oldValue, newValue);
@@ -941,6 +1024,8 @@ class WebServer(BaseHTTPRequestHandler):
                     
                     const tabId = `field-${cardIndex}-${fieldName.replace(/\\s+/g, '')}`;
                     
+                    const inputClass = fieldName === 'Front' ? 'field-input-front' : (fieldName === 'Back' ? 'field-input-back' : 'field-input');
+                    
                     fieldsHtml += `
                         <div class="field-group">
                             <label class="field-label">${fieldName}</label>
@@ -958,7 +1043,7 @@ class WebServer(BaseHTTPRequestHandler):
                                     ${previewHtml}
                                 </div>
                                 <div id="${tabId}-updated" class="tab-content">
-                                    <textarea class="field-input" 
+                                    <textarea class="${inputClass}" 
                                              onchange="updateField(${cardIndex}, '${fieldName}', this.value)"
                                              oninput="updateFieldAndRefresh(${cardIndex}, '${fieldName}', this.value, '${tabId}')"
                                              onkeydown="handleTextareaKeydown(event, ${cardIndex}, '${fieldName}', '${tabId}')"
@@ -1672,6 +1757,9 @@ class AnkiDeckFixer:
     ) -> Dict[str, Any]:
         """Process cards and return results for web interface review"""
 
+        # Initialize skipped cards tracking
+        skipped_cards = []
+
         # Verify deck exists
         deck_names = self.anki.get_deck_names()
 
@@ -1697,6 +1785,15 @@ class AnkiDeckFixer:
                 search = f"\"front:re:^.*\\b{word}\\b.*$\""
                 results = self.anki.get_cards_in_deck_with_search(deck_name, search)
                 if results:
+                    # If found more than 1, skip
+                    if len(results) > 1:
+                        skipped_cards.append({
+                            "word": word,
+                            "reason": "multiple_matches",
+                            "details": f"Found {len(results)} cards matching '{word}'. Please be more specific."
+                        })
+                        print(f"Skipping word {word} which had {len(results)} match results")
+                        continue
                     for cid in results:
                         if cid not in seen:
                             card_ids.append(cid)
@@ -1789,6 +1886,11 @@ class AnkiDeckFixer:
                 if card.get("note") is not None:
                     note_ids.add(card["note"])
                 else:
+                    skipped_cards.append({
+                        "card_id": card.get("cardId", f"unknown_{i}"),
+                        "reason": "missing_note",
+                        "details": f"Card doesn't contain note property, skipping: {card} ({i})"
+                    })
                     print(f"Card doesn't contain note property, skipping: {card} ({i})")
             note_ids = list(note_ids)
             notes_info = self.anki.get_note_info(note_ids)
@@ -1843,6 +1945,7 @@ class AnkiDeckFixer:
             "processed_count": len(processed_cards),
             "processed_cards": sanitized_cards,
             "full_log": full_log,
+            "skipped_cards": skipped_cards,
         }
 
     def apply_selected_changes(self, changes_data: Dict[str, Any]) -> Dict[str, Any]:
