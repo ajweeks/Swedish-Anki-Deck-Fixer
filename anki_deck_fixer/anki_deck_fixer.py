@@ -18,7 +18,7 @@ Safety features:
 """
 
 # TODO:
-# [ ] Always allow front field to be edited in web interface
+# [x] Always allow front field to be edited in web interface
 # [ ] Always update cards, even with no changes, to add reviewed tag
 # [x] Don't add new cards until the user explicitly requests it
 
@@ -51,11 +51,11 @@ class AnkiConnector:
         payload = {"action": action, "version": 6, "params": params}
 
         try:
-            print(f"---action: {action}, params: {params}")
+            # print(f"---action: {action}, params: {params}")
             response: requests.Response = requests.post(self.url, json=payload)
             response.raise_for_status()
             result = response.json()
-            print(f"-----result: {result}")
+            # print(f"-----result: {result}")
 
             if result.get("error"):
                 raise Exception(f"AnkiConnect error: {result['error']}")
@@ -305,7 +305,10 @@ class WebServer(BaseHTTPRequestHandler):
         except Exception as e:
             print(f"Error handling GET {path}: {e}")
             traceback.print_exc()
-            self.send_error(500, str(e))
+            if path.startswith("/api/"):
+                self.send_json_error(500, str(e))
+            else:
+                self.send_error(500, str(e))
 
     def do_POST(self):
         """Handle POST requests"""
@@ -326,7 +329,10 @@ class WebServer(BaseHTTPRequestHandler):
         except Exception as e:
             print(f"Error handling POST {path}: {e}")
             traceback.print_exc()
-            self.send_error(500, str(e))
+            if path.startswith("/api/"):
+                self.send_json_error(500, str(e))
+            else:
+                self.send_error(500, str(e))
 
     def serve_interface(self):
         """Serve the main HTML interface"""
@@ -352,7 +358,7 @@ class WebServer(BaseHTTPRequestHandler):
             self.send_json_response(response)
         except Exception as e:
             print(f"Error getting decks: {e}")
-            self.send_error(500, str(e))
+            self.send_json_error(500, str(e))
 
     def serve_status(self):
         """Serve server status"""
@@ -413,7 +419,7 @@ class WebServer(BaseHTTPRequestHandler):
         except Exception as e:
             print(f"Error in handle_process_request: {e}")
             traceback.print_exc()
-            self.send_error(500, str(e))
+            self.send_json_error(500, str(e))
 
     def handle_apply_request(self, data):
         """Handle apply changes request"""
@@ -425,7 +431,21 @@ class WebServer(BaseHTTPRequestHandler):
             self.send_json_response(results)
 
         except Exception as e:
-            self.send_error(500, str(e))
+            self.send_json_error(500, str(e))
+
+    def send_json_error(self, status_code: int, message: str):
+        """Send a JSON error response"""
+        response_data = json.dumps({"error": message}, ensure_ascii=False, indent=2)
+        response_bytes = response_data.encode("utf-8")
+
+        self.send_response(status_code)
+        self.send_header("Content-type", "application/json; charset=utf-8")
+        self.send_header("Access-Control-Allow-Origin", "*")
+        self.send_header("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+        self.send_header("Access-Control-Allow-Headers", "Content-Type")
+        self.send_header("Content-Length", str(len(response_bytes)))
+        self.end_headers()
+        self.wfile.write(response_bytes)
 
     def send_json_response(self, data):
         """Send JSON response"""
@@ -579,8 +599,8 @@ class WebServer(BaseHTTPRequestHandler):
                 <div class="stat-item"><span>✅</span><span>Selected: <span id="selectedCards">0</span>/<span id="totalCards">0</span></span></div>
             </div>
             <div class="control-group" id="actionControls" style="display: none;">
-                <button class="btn btn-secondary" onclick="selectAll()">Select All</button>
-                <button class="btn btn-secondary" onclick="selectNone()">Select None</button>
+                <button class="btn btn-secondary" onclick="selectAll()" id="selectAllBtn">Select All</button>
+                <button class="btn btn-secondary" onclick="selectNone()" id="selectNoneBtn">Select None</button>
                 <button class="btn btn-success" onclick="applyChanges()" disabled id="applyBtn">Apply Changes</button>
             </div>
         </div>
@@ -698,7 +718,21 @@ class WebServer(BaseHTTPRequestHandler):
         async function loadDecks() {
             try {
                 const response = await fetch('/api/decks');
-                const data = await response.json();
+                const responseText = await response.text();
+
+                let data;
+                try {
+                    data = JSON.parse(responseText);
+                } catch (parseError) {
+                    console.error("JSON parse error:", parseError);
+                    console.error("Failed to parse response:", responseText);
+                    throw new Error('Unexpected response from server');
+                }
+
+                if (!response.ok) {
+                    const errorMessage = (data && data.error) ? data.error : `HTTP ${response.status}`;
+                    throw new Error(errorMessage);
+                }
                 
                 const deckSelect = document.getElementById('deckSelect');
                 deckSelect.innerHTML = '<option value="">Select a deck...</option>';
@@ -715,7 +749,12 @@ class WebServer(BaseHTTPRequestHandler):
                 }
             } catch (error) {
                 console.error('Error loading decks:', error);
-                alert('Error loading decks. Make sure Anki is running with AnkiConnect.' + error.message);
+                const message = (error && error.message) ? error.message : String(error);
+                if (message.includes('Cannot connect to Anki')) {
+                    alert('Cannot connect to Anki. Make sure Anki is running with AnkiConnect add-on installed.');
+                } else {
+                    alert(message);
+                }
             }
         }
 
@@ -806,8 +845,8 @@ class WebServer(BaseHTTPRequestHandler):
                 const result = await response.json();
                 hideProcessing();
                 selectedCards.clear();
-                updateStats();
                 cardData = [];
+                updateStats();
 
             } catch (error) {
                 console.error('Error applying changes:', error);
@@ -840,6 +879,9 @@ class WebServer(BaseHTTPRequestHandler):
             full_log = data.full_log || '';
             skippedCards = data.skipped_cards || [];
             selectedCards.clear();
+            cardData.forEach((_, index) => {
+                selectedCards.add(index);
+            });
             renderCards();
             renderSkippedCards();
             updateStats();
@@ -1181,16 +1223,19 @@ class WebServer(BaseHTTPRequestHandler):
                 let before = value.slice(0, start);
                 let selected = value.slice(start, end);
                 let after = value.slice(end);
-                if (selected.endsWith(' ')) {
-                    selected = selected.slice(0, -1);
-                    after = ' ' + after;
-                    end++;
+                const trailingWhitespaceMatch = selected.match(/(\s+)$/);
+                if (trailingWhitespaceMatch) {
+                    const trailingWhitespace = trailingWhitespaceMatch[1];
+                    selected = selected.slice(0, -trailingWhitespace.length);
+                    after = trailingWhitespace + after;
+                }
+                if (selected.length === 0) {
+                    return;
                 }
                 const wrapped = '<i>' + selected + '</i>';
                 textarea.value = before + wrapped + after;
-                //const newStart = start + 3; // position after <i>
-                //const newEnd = newStart + selected.length;
-                //textarea.setSelectionRange(newStart, newEnd);
+                const newCursorPos = start + wrapped.length; // position after </i>
+                textarea.setSelectionRange(newCursorPos, newCursorPos);
                 updateFieldAndRefresh(cardIndex, fieldName, textarea.value, tabId);
             }
         }
@@ -1201,6 +1246,16 @@ class WebServer(BaseHTTPRequestHandler):
             
             const applyBtn = document.getElementById('applyBtn');
             applyBtn.disabled = selectedCards.size === 0;
+
+            const selectAllBtn = document.getElementById('selectAllBtn');
+            if (selectAllBtn) {
+                selectAllBtn.disabled = cardData.length === 0 || selectedCards.size === cardData.length;
+            }
+
+            const selectNoneBtn = document.getElementById('selectNoneBtn');
+            if (selectNoneBtn) {
+                selectNoneBtn.disabled = cardData.length === 0 || selectedCards.size === 0;
+            }
         }
 
         function extractSwedishWord(card, cardIndex) {
@@ -1215,16 +1270,16 @@ class WebServer(BaseHTTPRequestHandler):
             let cleanText = frontField.replace(/<[^>]*>/g, '');
             
             // Remove articles (en, ett, den, det) from the beginning
-            cleanText = cleanText.replace(/^(en|ett|den|det|att)\\s+/i, '');
+            cleanText = cleanText.replace(/^(en|ett|den|det|att)\s+/i, '');
             
             // Remove parentheses and their contents (like counts or grammar info)
-            cleanText = cleanText.replace(/\\([^)]*\\)/g, '');
-            
-            // Get the first word (main Swedish word)
-            const words = cleanText.trim().split(/\\s+/);
-            const mainWord = words[0];
-            
-            return mainWord ? mainWord.toLowerCase() : null;
+            cleanText = cleanText.replace(/\([^)]*\)/g, '');
+
+            cleanText = cleanText.split(/\s+[\-–—:]\s+/)[0];
+            cleanText = cleanText.replace(/\s+/g, ' ').trim();
+            cleanText = cleanText.replace(/[\.,;:!?]+$/g, '').trim();
+
+            return cleanText ? cleanText.toLowerCase() : null;
         }
 
         function generateDiff(oldText, newText) {
@@ -1982,7 +2037,7 @@ class AnkiDeckFixer:
                         else:
                             raise Exception("Failed to create new note")
                 else:
-                    # Update existing card
+                    # Update existing card - always update to add reviewed tag
                     if updated_fields:
                         for field_name, new_value in updated_fields.items():
                             new_value = new_value.replace("\n", "<br>")
@@ -1990,9 +2045,9 @@ class AnkiDeckFixer:
 
                         # TODO: Add forvo audio & change note type when needed
 
-                        tags = self.anki.get_note_tags(note_id) + ["reviewed"]
-                        self.anki.update_note(note_id, updated_fields, tags)
-                        results["applied_count"] += 1
+                    tags = self.anki.get_note_tags(note_id) + ["reviewed"]
+                    self.anki.update_note(note_id, updated_fields, tags)
+                    results["applied_count"] += 1
 
             except Exception as e:
                 results["failed_count"] += 1
