@@ -19,7 +19,6 @@ Safety features:
 
 # TODO:
 # [x] Always allow front field to be edited in web interface
-# [ ] Always update cards, even with no changes, to add reviewed tag
 # [x] Don't add new cards until the user explicitly requests it
 
 import json
@@ -38,7 +37,7 @@ import webbrowser
 from urllib.parse import urlparse
 import traceback
 
-MODEL_NAME = "claude-sonnet-4-20250514"
+MODEL_NAME = "claude-sonnet-4-5-20250929"
 
 class AnkiConnector:
     """Handles communication with Anki through AnkiConnect"""
@@ -324,6 +323,8 @@ class WebServer(BaseHTTPRequestHandler):
                 self.handle_process_request(data)
             elif path == "/api/apply":
                 self.handle_apply_request(data)
+            elif path == "/api/retry":
+                self.handle_retry_request(data)
             else:
                 self.send_error(404)
         except Exception as e:
@@ -433,6 +434,54 @@ class WebServer(BaseHTTPRequestHandler):
         except Exception as e:
             self.send_json_error(500, str(e))
 
+    def handle_retry_request(self, data):
+        """Handle retry card processing with additional instructions"""
+        try:
+            if not self.fixer:
+                raise Exception("Fixer not initialized")
+
+            card = data.get("card")
+            additional_info = data.get("additional_info", "")
+
+            if not card:
+                raise Exception("card is required")
+
+            # Build a minimal card structure for process_card_batch
+            fields = {}
+            for field_name, value in (card.get("original_fields") or {}).items():
+                if isinstance(value, dict):
+                    fields[field_name] = value
+                else:
+                    fields[field_name] = {"value": value, "order": 0}
+
+            fake_card = {
+                "note": {
+                    "noteId": card.get("note_id"),
+                    "modelName": card.get("model_name", "Basic"),
+                    "fields": fields,
+                    "tags": card.get("tags", []),
+                }
+            }
+
+            processed_cards, raw_response = self.fixer.processor.process_card_batch(
+                [fake_card], additional_info=additional_info
+            )
+
+            if processed_cards:
+                result = {
+                    "processed_card": processed_cards[0],
+                    "raw_response": raw_response,
+                }
+            else:
+                result = {"error": "No card returned from processing"}
+
+            self.send_json_response(result)
+
+        except Exception as e:
+            print(f"Error in handle_retry_request: {e}")
+            traceback.print_exc()
+            self.send_json_error(500, str(e))
+
     def send_json_error(self, status_code: int, message: str):
         """Send a JSON error response"""
         response_data = json.dumps({"error": message}, ensure_ascii=False, indent=2)
@@ -530,7 +579,7 @@ class WebServer(BaseHTTPRequestHandler):
         .processing { display: none; text-align: center; padding: 40px; }
         .processing-spinner { width: 40px; height: 40px; border: 4px solid #f3f3f3; border-top: 4px solid #667eea; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 20px; }
         @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
-        .card { background: white; border: 1px solid #e9ecef; border-radius: 12px; margin-bottom: 20px; overflow: hidden; transition: all 0.3s ease; box-shadow: 0 2px 10px rgba(0,0,0,0.05); }
+        .card { background: white; border: 1px solid #e9ecef; border-radius: 12px; margin-bottom: 20px; overflow: hidden; transition: all 0.3s ease; box-shadow: 0 2px 10px rgba(0,0,0,0.05); position: relative; }
         .card:hover { box-shadow: 0 5px 20px rgba(0,0,0,0.1); }
         .card.selected { border-color: #667eea; box-shadow: 0 5px 20px rgba(102, 126, 234, 0.2); }
         .card-header { background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%); padding: 8px; border-bottom: 1px solid #e9ecef; display: flex; align-items: center; justify-content: space-between; }
@@ -577,11 +626,26 @@ class WebServer(BaseHTTPRequestHandler):
         .tab-content { display: none; padding: 5px; }
         .tab-content.active { display: block; }
         .field-section-tabbed { background: #f8f9fa; border-radius: 0 0 8px 8px; border: 1px solid #ddd; }
-        .reference-links { background: #f8f9fa; border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin-top: 10px; }
-        .reference-links h4 { color: #495057; font-size: 0.9rem; margin-bottom: 10px; }
-        .reference-links a { display: inline-block; margin-right: 15px; padding: 6px 12px; background: #e9ecef; color: #495057; text-decoration: none; border-radius: 6px; font-size: 0.85rem; transition: all 0.3s ease; }
+        .reference-links { background: #f8f9fa; border: 1px solid #ddd; border-radius: 8px; padding: 15px; margin-top: 10px; display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+        .reference-links h4 { color: #495057; font-size: 0.9rem; margin-bottom: 0; }
+        .reference-links a { display: inline-block; padding: 6px 12px; background: #e9ecef; color: #495057; text-decoration: none; border-radius: 6px; font-size: 0.85rem; transition: all 0.3s ease; }
         .reference-links a:hover { background: #667eea; color: white; transform: translateY(-1px); }
+        .btn-toggle-retry { margin-left: auto; padding: 6px 12px; background: #e9ecef; color: #495057; border: none; border-radius: 6px; font-size: 0.85rem; cursor: pointer; transition: all 0.3s ease; display: inline-flex; align-items: center; gap: 6px; }
+        .btn-toggle-retry:hover { background: #667eea; color: white; transform: translateY(-1px); }
+        .btn-toggle-retry.active { background: #667eea; color: white; }
+        .btn-toggle-retry .arrow { display: inline-block; transition: transform 0.3s ease; font-size: 0.7rem; }
+        .btn-toggle-retry.active .arrow { transform: rotate(90deg); }
         @media (max-width: 768px) { .field-comparison { grid-template-columns: 1fr; } }
+        .retry-section { background: #f0f4ff; border-top: 1px solid #ddd; padding: 12px 15px; display: none; gap: 10px; align-items: flex-end; }
+        .retry-section.visible { display: flex; }
+        .retry-section textarea { flex: 1; min-height: 36px; max-height: 120px; padding: 8px; border: 1px solid #c5cae9; border-radius: 6px; font-family: inherit; font-size: 13px; resize: vertical; }
+        .retry-section textarea:focus { outline: none; border-color: #667eea; box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1); }
+        .retry-section .btn-retry { padding: 8px 18px; white-space: nowrap; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 13px; font-weight: 500; transition: all 0.3s ease; }
+        .retry-section .btn-retry:hover:not(:disabled) { transform: translateY(-1px); box-shadow: 0 3px 10px rgba(102, 126, 234, 0.4); }
+        .retry-section .btn-retry:disabled { opacity: 0.6; cursor: not-allowed; }
+        .card-loading-overlay { position: absolute; top: 0; left: 0; right: 0; bottom: 0; background: rgba(255,255,255,0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 10; border-radius: 12px; }
+        .card-loading-overlay .processing-spinner { width: 30px; height: 30px; border: 3px solid #f3f3f3; border-top: 3px solid #667eea; border-radius: 50%; animation: spin 1s linear infinite; margin-bottom: 10px; }
+        .card-loading-overlay p { color: #495057; font-size: 14px; font-weight: 500; }
     </style>
 </head>
 <body>
@@ -670,7 +734,7 @@ class WebServer(BaseHTTPRequestHandler):
 
             <div class="debug-section" id="debugSection" style="display: none; margin-top: 30px;">
                 <div class="debug-header" onclick="toggleDebugOutput()" style="background: #f8f9fa; border: 1px solid #ddd; border-radius: 8px 8px 0 0; padding: 15px; cursor: pointer; display: flex; justify-content: space-between; align-items: center;">
-                    <h3 style="margin: 0; color: #495057;">🔍 Claude Raw Output (Debug)</h3>
+                    <h3 style="margin: 0; color: #495057;">🔍 Raw Model Output (Debug)</h3>
                     <span id="debugToggle" style="color: #6c757d;">▼ Show</span>
                 </div>
                 <div class="debug-content" id="debugContent" style="display: none; border: 1px solid #ddd; border-top: none; border-radius: 0 0 8px 8px; padding: 20px; background: #f8f9fa;">
@@ -984,6 +1048,10 @@ class WebServer(BaseHTTPRequestHandler):
                     ${renderFields(card, index)}
                     ${renderReferences(card, index)}
                 </div>
+                <div class="retry-section" id="retry-section-${index}">
+                    <textarea id="retry-info-${index}" placeholder="Additional instructions for regeneration (e.g. 'include these definitions: ...')"></textarea>
+                    <button class="btn-retry" id="retry-btn-${index}" onclick="retryCard(${index})">Regenerate</button>
+                </div>
             `;
 
             return cardDiv;
@@ -1022,30 +1090,30 @@ class WebServer(BaseHTTPRequestHandler):
                 // Check if there are actual changes
                 const hasChanges = oldValue !== newValue;
                 
-                if (!hasChanges) {
-                    // No changes - show original value with edit box for Front field
-                    if (fieldName === 'Front') {
-                        fieldsHtml += `
-                            <div class="field-group">
-                                <label class="field-label">${fieldName} <span style="color: #6c757d; font-weight: normal;">(editable)</span></label>
-                                <div class="field-section" style="border: 1px solid #ddd; border-radius: 8px;">
-                                    <textarea class="field-input-front" 
-                                             onchange="updateField(${cardIndex}, '${fieldName}', this.value)"
-                                             oninput="updateFieldAndRefresh(${cardIndex}, '${fieldName}', this.value, 'no-changes-${cardIndex}-${fieldName}')"
-                                             placeholder="Enter ${fieldName} content...">${escapeHtml(oldValue) || ''}</textarea>
-                                </div>
+                // Front field is always shown as an editable textarea
+                if (fieldName === 'Front') {
+                    const displayValue = hasChanges ? newValue : oldValue;
+                    const changeLabel = hasChanges ? '' : ' <span style="color: #6c757d; font-weight: normal;">(no changes)</span>';
+                    fieldsHtml += `
+                        <div class="field-group">
+                            <label class="field-label">${fieldName}${changeLabel}</label>
+                            <div class="field-section" style="border: 1px solid #ddd; border-radius: 8px;">
+                                <textarea class="field-input-front" 
+                                         onchange="updateField(${cardIndex}, '${fieldName}', this.value)"
+                                         oninput="updateFieldAndRefresh(${cardIndex}, '${fieldName}', this.value, 'no-changes-${cardIndex}-${fieldName}')"
+                                         placeholder="Enter ${fieldName} content...">${escapeHtml(displayValue) || ''}</textarea>
                             </div>
-                        `;
-                    } else {
-                        fieldsHtml += `
-                            <div class="field-group">
-                                <label class="field-label">${fieldName} <span style="color: #6c757d; font-weight: normal;">(no changes)</span></label>
-                                <div class="field-section" style="border: 1px solid #ddd; border-radius: 8px;">
-                                    <div class="field-content" style="padding: 15px;">${escapeHtml(oldValue) || '<em>Empty</em>'}</div>
-                                </div>
+                        </div>
+                    `;
+                } else if (!hasChanges) {
+                    fieldsHtml += `
+                        <div class="field-group">
+                            <label class="field-label">${fieldName} <span style="color: #6c757d; font-weight: normal;">(no changes)</span></label>
+                            <div class="field-section" style="border: 1px solid #ddd; border-radius: 8px;">
+                                <div class="field-content" style="padding: 15px;">${escapeHtml(oldValue) || '<em>Empty</em>'}</div>
                             </div>
-                        `;
-                    }
+                        </div>
+                    `;
                 } else {
                     // Has changes - show full tabbed interface
                     const diffHtml = generateDiff(oldValue, newValue);
@@ -1066,7 +1134,7 @@ class WebServer(BaseHTTPRequestHandler):
                     
                     const tabId = `field-${cardIndex}-${fieldName.replace(/\\s+/g, '')}`;
                     
-                    const inputClass = fieldName === 'Front' ? 'field-input-front' : (fieldName === 'Back' ? 'field-input-back' : 'field-input');
+                    const inputClass = fieldName === 'Back' ? 'field-input-back' : 'field-input';
                     
                     fieldsHtml += `
                         <div class="field-group">
@@ -1115,6 +1183,7 @@ class WebServer(BaseHTTPRequestHandler):
                             <a href="${wiktionaryUrl}" target="_blank" rel="noopener">📚 Wiktionary</a>
                             <a href="${reversoUrl}" target="_blank" rel="noopener">🔄 Reverso Context</a>
                             <a href="${synonymerUrl}" target="_blank" rel="noopener">🔣 Synonymer</a>
+                            <button class="btn-toggle-retry" onclick="toggleRetry(${cardIndex})" id="toggle-retry-btn-${cardIndex}">Regenerate <span class="arrow">&#9654;</span></button>
                         </div>
                     `;
                 }
@@ -1223,7 +1292,7 @@ class WebServer(BaseHTTPRequestHandler):
                 let before = value.slice(0, start);
                 let selected = value.slice(start, end);
                 let after = value.slice(end);
-                const trailingWhitespaceMatch = selected.match(/(\s+)$/);
+                const trailingWhitespaceMatch = selected.match(/(\\s+)$/);
                 if (trailingWhitespaceMatch) {
                     const trailingWhitespace = trailingWhitespaceMatch[1];
                     selected = selected.slice(0, -trailingWhitespace.length);
@@ -1270,14 +1339,14 @@ class WebServer(BaseHTTPRequestHandler):
             let cleanText = frontField.replace(/<[^>]*>/g, '');
             
             // Remove articles (en, ett, den, det) from the beginning
-            cleanText = cleanText.replace(/^(en|ett|den|det|att)\s+/i, '');
+            cleanText = cleanText.replace(/^(en|ett|den|det|att)\\s+/i, '');
             
             // Remove parentheses and their contents (like counts or grammar info)
-            cleanText = cleanText.replace(/\([^)]*\)/g, '');
+            cleanText = cleanText.replace(/\\([^)]*\\)/g, '');
 
-            cleanText = cleanText.split(/\s+[\-–—:]\s+/)[0];
-            cleanText = cleanText.replace(/\s+/g, ' ').trim();
-            cleanText = cleanText.replace(/[\.,;:!?]+$/g, '').trim();
+            cleanText = cleanText.split(/\\s+[\\-–—:]\\s+/)[0];
+            cleanText = cleanText.replace(/\\s+/g, ' ').trim();
+            cleanText = cleanText.replace(/[\\.,;:!?]+$/g, '').trim();
 
             return cleanText ? cleanText.toLowerCase() : null;
         }
@@ -1374,6 +1443,84 @@ class WebServer(BaseHTTPRequestHandler):
 
         function hasUnsavedWork() {
             return (cardData.length > 0);
+        }
+
+        function toggleRetry(index) {
+            const section = document.getElementById(`retry-section-${index}`);
+            const btn = document.getElementById(`toggle-retry-btn-${index}`);
+            if (section.classList.contains('visible')) {
+                section.classList.remove('visible');
+                btn.classList.remove('active');
+            } else {
+                section.classList.add('visible');
+                btn.classList.add('active');
+                document.getElementById(`retry-info-${index}`).focus();
+            }
+        }
+
+        async function retryCard(index) {
+            const card = cardData[index];
+            if (!card) return;
+
+            const additionalInfo = document.getElementById(`retry-info-${index}`).value.trim();
+            const retryBtn = document.getElementById(`retry-btn-${index}`);
+            const cardEl = document.getElementById(`card-${index}`);
+
+            // Show loading overlay on the card
+            retryBtn.disabled = true;
+            retryBtn.textContent = 'Regenerating...';
+            const overlay = document.createElement('div');
+            overlay.className = 'card-loading-overlay';
+            overlay.innerHTML = '<div class="processing-spinner"></div><p>Regenerating card...</p>';
+            cardEl.appendChild(overlay);
+
+            try {
+                const response = await fetch('/api/retry', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        card: card,
+                        additional_info: additionalInfo
+                    })
+                });
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${await response.text()}`);
+                }
+
+                const result = await response.json();
+
+                if (result.error) {
+                    throw new Error(result.error);
+                }
+
+                // Update the card data in place, preserving original_fields
+                const newCard = result.processed_card;
+                newCard.original_fields = card.original_fields;
+                newCard.note_id = card.note_id;
+                newCard.model_name = card.model_name;
+                newCard.tags = card.tags;
+                cardData[index] = newCard;
+
+                // Re-render just this card
+                const wasSelected = selectedCards.has(index);
+                const newCardEl = createCardElement(newCard, index);
+                cardEl.replaceWith(newCardEl);
+
+                // Restore selection state
+                if (wasSelected && !selectedCards.has(index)) {
+                    selectedCards.add(index);
+                }
+                updateStats();
+
+            } catch (error) {
+                console.error('Error retrying card:', error);
+                alert('Error regenerating card: ' + error.message);
+                // Remove overlay on error
+                overlay.remove();
+                retryBtn.disabled = false;
+                retryBtn.textContent = 'Regenerate';
+            }
         }
     </script>
 </body>
@@ -1496,7 +1643,7 @@ class SwedishCardProcessor:
         self.forvo = ForvoAPI(forvo_api_key)
         self.anki = anki_connector
 
-    def process_card_batch(self, cards: List[Dict]) -> tuple[List[Dict], str]:
+    def process_card_batch(self, cards: List[Dict], additional_info: str = "") -> tuple[List[Dict], str]:
         """Process a batch of cards using Claude"""
 
         # Prepare card data for Claude
@@ -1518,17 +1665,19 @@ class SwedishCardProcessor:
             return [], ""
 
         # Create prompt for Claude
-        prompt = self._create_processing_prompt(card_data)
+        prompt = self._create_processing_prompt(card_data, additional_info)
         print(
-            f"Prompt created, length: {len(prompt)} characters for {len(cards)} cards"
+            f"Prompt created, system: {len(prompt[0])} chars, user: {len(prompt[1])} chars for {len(cards)} cards"
         )
 
         try:
             print("Calling Claude API...")
+            system_prompt, user_prompt = prompt
             response = self.client.messages.create(
                 model=MODEL_NAME,
                 max_tokens=4000,
-                messages=[{"role": "user", "content": prompt}],
+                system=system_prompt,
+                messages=[{"role": "user", "content": user_prompt}],
             )
 
             # Store raw response for debugging
@@ -1549,25 +1698,23 @@ class SwedishCardProcessor:
             traceback.print_exc()
             return [], ""
 
-    def _create_processing_prompt(self, card_data: List[Dict]) -> str:
-        """Create the prompt for Claude to process cards"""
+    def _create_processing_prompt(self, card_data: List[Dict], additional_info: str = "") -> tuple:
+        """Create the system and user prompts for Claude to process cards.
+        Returns a tuple of (system_prompt, user_prompt)."""
 
         if os.path.exists("prompt.md"):
-            user_prompt = open("prompt.md", "r", encoding="utf-8").read()
+            system_prompt = open("prompt.md", "r", encoding="utf-8").read()
         else:
-            user_prompt = open("anki_deck_fixer/prompt.md", "r", encoding="utf-8").read()
+            system_prompt = open("anki_deck_fixer/prompt.md", "r", encoding="utf-8").read()
 
-        print("user_prompt: ", user_prompt)
-        print("card_data: ", json.dumps(card_data, indent=2, ensure_ascii=False))
-
-        final_prompt = f"""{user_prompt}
-
-Please process the following cards and return only the results strictly in the JSON format provided, with no further comments.
-
+        user_prompt = f"""Process the following cards and return only the results strictly in the JSON format specified in your instructions, with no further comments.
 Cards to process:
 {json.dumps(card_data, indent=2, ensure_ascii=False)}
 """
-        return final_prompt
+        if additional_info:
+            user_prompt += f"\nAdditional instructions from the user:\n{additional_info}\n"
+
+        return (system_prompt, user_prompt)
 
     def _parse_claude_response(self, response_text: str) -> List[Dict]:
         """Parse Claude's JSON response and prepare updates"""
