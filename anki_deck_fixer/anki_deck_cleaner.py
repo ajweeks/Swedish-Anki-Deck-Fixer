@@ -477,13 +477,14 @@ class CardCleaner:
 
         idx = 0
         while idx < len(lines):
-            line = lines[idx].strip()
-            if not line:
-                processed_lines.append(line)
+            line = lines[idx].lstrip()
+            stripped = line.strip()
+            if not stripped:
+                processed_lines.append('')
                 idx += 1
                 continue
 
-            m = re.match(r'^(.*)\(\s*(["\	\'].*)$', line)
+            m = re.match(r'^(.*)\(\s*(["\	\'].*)$', stripped)
             if m:
                 def_part = m.group(1).rstrip()
                 example_start = m.group(2).strip()
@@ -515,8 +516,8 @@ class CardCleaner:
                     continue
 
             # Handle t.ex. patterns
-            if '(t.ex. "' in line.lower():
-                parts = re.split(r'\(t\.ex\.\s*"([^"]*)"\)', line, flags=re.IGNORECASE)
+            if '(t.ex. "' in stripped.lower():
+                parts = re.split(r'\(t\.ex\.\s*"([^"]*)"\)', stripped, flags=re.IGNORECASE)
                 if len(parts) > 1:
                     def_part = parts[0].strip()
                     if def_part:
@@ -539,7 +540,7 @@ class CardCleaner:
                         if remaining:
                             processed_lines.append(self._apply_color_styling(remaining, is_gray=True))
                 else:
-                    m = re.match(r'^\s*(.*?)\(\s*t\.ex\.\s*(.*?)\)\s*$', line, flags=re.IGNORECASE)
+                    m = re.match(r'^\s*(.*?)\(\s*t\.ex\.\s*(.*?)\)\s*$', stripped, flags=re.IGNORECASE)
                     if m:
                         def_part = m.group(1).strip()
                         example_part = m.group(2).strip()
@@ -557,22 +558,22 @@ class CardCleaner:
 
                         processed_lines.append(self._apply_color_styling(example_part, is_gray=True))
                     else:
-                        line = re.sub(r'\(t\.ex\.\s*"', '"', line, flags=re.IGNORECASE)
-                        line = re.sub(r'\)$', '', line)
-                        processed_lines.append(self._process_line(line, is_main))
-            elif line.lower().startswith('t.ex. ') and self.example_sentence_pattern.match(line[6:]):
-                example = line[6:].strip()
+                        stripped_line = re.sub(r'\(t\.ex\.\s*"', '"', stripped, flags=re.IGNORECASE)
+                        stripped_line = re.sub(r'\)$', '', stripped_line)
+                        processed_lines.append(self._process_line(stripped_line, is_main))
+            elif stripped.lower().startswith('t.ex. ') and self.example_sentence_pattern.match(stripped[6:]):
+                example = stripped[6:].strip()
                 processed_lines.append(self._apply_color_styling(example, is_gray=True))
-            elif line.startswith('t.ex. ') and self.example_sentence_pattern.match(line[6:]):
-                example = line[6:].strip()
+            elif stripped.startswith('t.ex. ') and self.example_sentence_pattern.match(stripped[6:]):
+                example = stripped[6:].strip()
                 processed_lines.append(self._apply_color_styling(example, is_gray=True))
             else:
-                if self.example_sentence_pattern.match(line):
+                if self.example_sentence_pattern.match(stripped):
                     next_idx = idx + 1
                     if next_idx < len(lines):
                         next_line = lines[next_idx].strip()
                         if next_line and re.match(r'^ordet\s+anv\w*\b', next_line, flags=re.IGNORECASE):
-                            example = self._remove_wrapping_parentheses(line)
+                            example = self._remove_wrapping_parentheses(stripped)
                             combined = f'{example}<br>{next_line}'
                             processed_lines.append(self._apply_color_styling(combined, is_gray=True))
                             idx += 2
@@ -1425,7 +1426,7 @@ class WebServer(BaseHTTPRequestHandler):
                 document.getElementById('startOffset').value = String(startFrom);
 
                 displayCards({
-                    cards: combined.slice(0, targetCount),
+                    cards: combined,
                     skipped_count: totalSkipped,
                     total_cards: totalCards === null ? 0 : totalCards,
                     processed_count: startFrom,
@@ -1686,50 +1687,32 @@ class AnkiDeckCleaner:
         self.card_cleaner = CardCleaner()
         self._deck_card_ids_cache = {}
 
+    def _select_front_back_field_names(self, fields_dict: Dict) -> Tuple[str, str]:
+        if not isinstance(fields_dict, dict):
+            raise KeyError('fields')
+
+        name_map = {str(name).strip().lower(): name for name in fields_dict.keys()}
+        if 'front' in name_map and 'back' in name_map:
+            return name_map['front'], name_map['back']
+
+        names = list(fields_dict.keys())
+        filtered = [
+            n
+            for n in names
+            if ('audio' not in str(n).lower() and 'sound' not in str(n).lower())
+        ]
+        if len(filtered) >= 2:
+            return filtered[0], filtered[1]
+        if len(names) >= 2:
+            return names[0], names[1]
+        raise KeyError('fields')
+
     def _build_prioritized_card_ids(self, deck_name: str) -> List[int]:
-        phase1_query = f'deck:"{deck_name}" -is:due -is:suspended'
-        phase2_query = f'deck:"{deck_name}" (is:due OR is:suspended)'
-
-        phase1_ids = self.anki.find_cards(phase1_query) or []
-        phase2_ids = self.anki.find_cards(phase2_query) or []
-
-        all_ids = list(dict.fromkeys((phase1_ids + phase2_ids)))
-        if not all_ids:
-            return []
-
-        info_by_id = {}
-        chunk_size = 500
-        for i in range(0, len(all_ids), chunk_size):
-            chunk = all_ids[i:i + chunk_size]
-            infos = self.anki.get_card_info(chunk) or []
-            for info in infos:
-                cid = info.get('cardId') or info.get('card_id') or info.get('id')
-                if cid is not None:
-                    info_by_id[cid] = info
-
-        def due_key(cid: int) -> int:
-            v = info_by_id.get(cid, {}).get('due')
-            return 0 if v is None else int(v)
-
-        def reps_key(cid: int) -> int:
-            v = info_by_id.get(cid, {}).get('reps')
-            return 0 if v is None else int(v)
-
-        phase1_sorted = sorted(phase1_ids, key=lambda cid: (due_key(cid), cid))
-        phase2_sorted = sorted(phase2_ids, key=lambda cid: (reps_key(cid), due_key(cid), cid))
-
-        seen = set()
-        combined = []
-        for cid in phase1_sorted:
-            if cid not in seen:
-                seen.add(cid)
-                combined.append(cid)
-        for cid in phase2_sorted:
-            if cid not in seen:
-                seen.add(cid)
-                combined.append(cid)
-
-        return combined
+        query = f'deck:"{deck_name}"'
+        card_ids = self.anki.find_cards(query) or []
+        card_ids = list(dict.fromkeys(card_ids))
+        card_ids.sort()
+        return card_ids
 
     def process_cards_for_review(self, deck_name: str, batch_size: int = 25, start_from: int = 0) -> Dict:
         """Process cards and return those that need changes"""
@@ -1776,19 +1759,15 @@ class AnkiDeckCleaner:
         skipped_count = 0
         
         def _extract_two_fields(fields_dict: Dict) -> Tuple[str, str, str, str]:
-            items = []
-            for name, meta in fields_dict.items():
+            front_name, back_name = self._select_front_back_field_names(fields_dict)
+
+            def _val(meta) -> str:
                 if isinstance(meta, dict):
-                    order = meta.get('order')
-                    value = meta.get('value', '')
-                else:
-                    order = None
-                    value = '' if meta is None else str(meta)
-                items.append((order if order is not None else 9999, name, value))
-            items.sort(key=lambda t: t[0])
-            if len(items) < 2:
-                raise KeyError('fields')
-            return items[0][1], items[1][1], items[0][2], items[1][2]
+                    v = meta.get('value', '')
+                    return '' if v is None else str(v)
+                return '' if meta is None else str(meta)
+
+            return front_name, back_name, _val(fields_dict.get(front_name)), _val(fields_dict.get(back_name))
 
         for card_info, note_id in card_entries:
             if note_id is None:
@@ -1863,12 +1842,12 @@ class AnkiDeckCleaner:
                         raise KeyError('front_field')
 
                     fields = note_infos[0].get('fields', {})
-                    field_names = list(fields.keys())
-                    if len(field_names) < 2:
+                    if not (isinstance(fields, dict) and len(fields) >= 2):
                         raise KeyError('front_field')
 
-                    front_field = front_field or field_names[0]
-                    back_field = back_field or field_names[1]
+                    selected_front, selected_back = self._select_front_back_field_names(fields)
+                    front_field = front_field or selected_front
+                    back_field = back_field or selected_back
 
                 fields = {
                     front_field: update['front'],

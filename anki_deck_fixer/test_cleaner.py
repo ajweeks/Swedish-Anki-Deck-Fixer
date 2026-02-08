@@ -55,6 +55,17 @@ def test_examples():
             }
         },
         {
+            "name": "Ett bestånd - t.ex. with multiple quoted examples",
+            "input": {
+                "front": "Ett bestånd",
+                "back": 'A stock / total amount of something (t.ex. "Vårt problem var ett föråldrat&nbsp;<i>bestånd&nbsp;</i>med flera klassiska låssystem.", "skogsbestånd")<br>(en beståndsdel: a component)'
+            },
+            "expected": {
+                "front": "Ett bestånd",
+                "back": 'A stock / total amount of something<br><span style="color: rgb(194, 194, 194)">"Vårt problem var ett föråldrat <i>bestånd </i>med flera klassiska låssystem."<br>"skogsbestånd"<br>(en beståndsdel: a component)</span>'
+            }
+        },
+        {
             "name": "Test with nbsp and gt entities",
             "input": {
                 "front": "Test card",
@@ -85,6 +96,17 @@ def test_examples():
             "expected": {
                 "front": "Belåten",
                 "back": 'Content / pleased<br><span style="color: rgb(194, 194, 194)">"självbelåten": smug<br>Ordet används främst i uttryck såsom "nöjd och <i>belåten</i>" och "mätt och <i>belåten</i>".</span>'
+            }
+        },
+        {
+            "name": "Salig - preserve space before gray span",
+            "input": {
+                "front": "Salig",
+                "back": '1. Blessed / blissful (frälst)&nbsp;<span style="color: rgb(194, 194, 194);">("Evighet,&nbsp;<i>salig</i>&nbsp;och full av kunskap")<br></span>2. Lycklig<br>3. Passed away <span style="color: rgb(194, 194, 194);">("Min&nbsp;<i>salig&nbsp;</i>man lämnade huset till mig")</span>'
+            },
+            "expected": {
+                "front": "Salig",
+                "back": '1. Blessed / blissful (frälst) <span style="color: rgb(194, 194, 194);">"Evighet, <i>salig</i> och full av kunskap"<br></span>2. Lycklig<br>3. Passed away <span style="color: rgb(194, 194, 194);">"Min <i>salig </i>man lämnade huset till mig"</span>'
             }
         },
         {
